@@ -57,6 +57,45 @@ npm run build   # backend serves frontend/dist in production
 Then `POST /migration/intake` (multipart `.zip` or `repo_url`), followed by
 `POST /migration/{run_id}/start` to run the pipeline end-to-end.
 
+### Configuring the Claude Code engine (required — every teammate needs their own)
+
+Cobalt does NOT call the Anthropic API directly for Planning/Generating/
+Repairing/Exploration's agentic steps — it spawns a **headless `claude -p`
+subprocess** (`backend/llm.py::find_claude()` + `_claude_code_env()`). Each
+teammate running this backend locally needs their OWN authenticated Claude
+Code CLI session; there is no shared/bundled credential.
+
+1. Install the Claude Code CLI and log in once, interactively:
+   ```bash
+   npm install -g @anthropic-ai/claude-code   # or your platform's install method
+   claude   # run once, follow the login flow, then exit
+   ```
+2. Confirm the backend can find the binary — `find_claude()` checks, in
+   order: the `CLAUDE_BIN` env var, then `claude` on `PATH`, then
+   `~/.local/bin/claude`. If `which claude` doesn't resolve after install,
+   set `CLAUDE_BIN=/full/path/to/claude` in your `.env` (repo root) rather
+   than editing code.
+3. Headless calls run under `HOME` (or `CLAUDE_HEADLESS_HOME` if you want to
+   point them at a different, already-logged-in profile — e.g. a dedicated
+   low-rate-limit account, useful if you also use `claude` interactively for
+   other work and don't want the two sessions to compete for quota).
+4. **Do not set `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`, or
+   `ANTHROPIC_AUTH_TOKEN` in the environment this backend runs in** unless
+   you have also verified `_claude_code_env()` strips them (it does, as of
+   this commit) — a set `ANTHROPIC_API_KEY` makes the `claude` CLI prioritize
+   raw API-key auth over its own OAuth session, and can turn a healthy,
+   already-logged-in Pro/Team account into "401 API key is invalid" for
+   every headless call, mid-pipeline, with no code-level cause (verified
+   live 2026-09-16: reproduced the exact failure by setting that one env var,
+   fixed by never passing it through to the subprocess).
+5. Symptom checklist if a teammate's headless calls fail and yours don't:
+   - `claude -p "say hi" --max-turns 1` in their own shell, with their own
+     `HOME` — if that alone fails, it's their CLI login, not Cobalt.
+   - Check their shell for `ANTHROPIC_API_KEY`/`ANTHROPIC_BASE_URL` set to
+     anything, including an empty string (`env | grep ANTHROPIC`).
+   - Confirm `CLAUDE_HEADLESS_HOME` (if set) actually points at a directory
+     with a valid `.claude.json` session, not an empty/wrong profile.
+
 ### Building a generated solution manually (same dotnet as the backend)
 
 From the **repo root**, load the SDK the parity sandbox uses (skips a broken
