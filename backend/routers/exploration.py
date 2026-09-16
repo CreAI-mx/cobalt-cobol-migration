@@ -165,8 +165,16 @@ async def exploration_lock(run_id: str, conn: aiosqlite.Connection = Depends(get
     data = await _load_session(conn, run_id)
     if not data or not data.get("draft_pack"):
         raise HTTPException(400, "No draft pack — run exploration first")
-    pack = core.build_exploration_pack(run_id, source_dir, locked=True)
+    # Real bug found 2026-09-16 (Codex audit via docs-package-architect agent):
+    # this used to call core.build_exploration_pack(..., locked=True) here,
+    # which re-derives the pack FROM SCRATCH — silently discarding the real
+    # agent-produced business rules (_agentic_business_rules) and any human
+    # module notes (POST .../notes) already sitting in draft_pack, replacing
+    # them with fresh deterministic_draft stubs. Promote the EXISTING draft
+    # pack instead — locking must never regress already-improved data.
     now = _now()
+    pack = dict(data["draft_pack"])
+    pack["locked_at"] = now
     await conn.execute(
         "UPDATE exploration_sessions SET locked_pack_json = ?, locked_at = ?, status = ?, "
         "draft_pack_json = ? WHERE run_id = ?",

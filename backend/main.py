@@ -8,6 +8,20 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 
+from dotenv import load_dotenv
+# Real bug found 2026-09-16: repo-root .env (ANTHROPIC_API_KEY for the
+# Exploration subsystem's agentic Phase 2 via Strands) was never loaded —
+# nothing in this process ever read it, so the agent silently fell back to
+# deterministic drafts forever. override=False: an operator's real shell
+# env var still wins over .env, this only fills gaps.
+load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=True)
+# Claude Code's own shell sets these to "" (empty, not unset) — the real
+# Anthropic SDK then builds a base URL with no scheme and every call fails
+# with a generic "Connection error." (found live, 2026-09-16, exploration's
+# agentic business-rule extraction). Strip process-wide, once, at startup.
+for _v in ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"):
+    os.environ.pop(_v, None)
+
 import llm
 from db import init_db, DB_PATH
 from routers import intake, pipeline, exploration
