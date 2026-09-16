@@ -113,6 +113,7 @@ function RunHistory({ onOpenRun }: { onOpenRun: () => void }) {
                   {flying || opening === r.run_id ? <SpinnerIcon width={10} height={10} /> : null}
                   {label}
                 </span>
+                <span className="mono run-history-id" title={r.run_id}>{r.run_id}</span>
                 <span className="mono run-history-repo" title={r.source_repo}>
                   {r.source_repo.includes('/')
                     ? r.source_repo.split('/').slice(-2).join('/')

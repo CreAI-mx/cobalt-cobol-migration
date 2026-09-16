@@ -42,3 +42,7 @@ _bodega/
 # Backups made during this session's real bug fixes
 raw/*.bak
 raw/*.bak2
+
+# Stray Exploration-generated docs package that leaked to repo root instead
+# of migration-state/runs/{run_id}/ — regenerated output, not source.
+docs-cobol-accounting-system/

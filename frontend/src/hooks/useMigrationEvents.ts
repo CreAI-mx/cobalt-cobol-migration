@@ -3,7 +3,7 @@
 // unsubscribes. The full event log is buffered here and replayed to any step
 // that mounts later.
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { getArchitecture, getCost, getGateHistory, getPlan, getRunDetail, getStatus, getTree, intake as postIntake, openEventStream, postAgentRerun, postArchitecture, postGate, postPlan, startPipeline } from '../lib/api';
+import { getArchitecture, getCost, getGateHistory, getPlan, getRunDetail, getStatus, getTree, intake as postIntake, openEventStream, postAgentRerun, postArchitecture, postExplorationStart, postGate, postPlan, startPipeline } from '../lib/api';
 import type {
   ArchitectureDecision,
   CostLogEntry,
@@ -56,6 +56,8 @@ export interface RunState {
   /** Pass the run id explicitly when calling right after doIntake resolves —
    * the closure's runId state may not have propagated yet. */
   doStart: (runId?: string) => Promise<void>;
+  /** Step 2 ESS — parse/graph/modules without starting migration. */
+  startExploration: (runId?: string) => Promise<void>;
   doPlan: (runId?: string) => Promise<void>;
   plan: MigrationPlan | null;
   /** Re-run the pipeline for the SAME run_id after a FAILED/ABORTED status —
@@ -280,6 +282,15 @@ export function useMigrationEvents(): RunState {
       esRef.current?.close();
       esRef.current = null;
     }
+  }, [runId, subscribe]);
+
+  const startExploration = useCallback(async (idArg?: string) => {
+    const id = idArg ?? intakeRef.current?.run_id ?? runId;
+    if (!id) return;
+    setError(null);
+    setLive(true);
+    if (!esRef.current) subscribe(id);
+    await postExplorationStart(id);
   }, [runId, subscribe]);
 
 
@@ -563,6 +574,7 @@ export function useMigrationEvents(): RunState {
     submitArchitecture,
     doIntake,
     doStart,
+    startExploration,
     doPlan,
     plan,
     retry,

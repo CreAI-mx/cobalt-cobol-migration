@@ -1,4 +1,20 @@
-# Propuestas (backend) — para reenviar al agente de frontend / al usuario
+# Propuestas (backend)
+
+## Estado (2026-09-16)
+
+| Ítem | Estado | Notas |
+|------|--------|--------|
+| Diagrama CALL inline (Migration Modules) | **Parcial** | `ModuleCallGraph.tsx` — subgrafo real del pack; **no** Mermaid; **no** zoom/pan/hover |
+| Superficie draft pack / revisión humana (Step 2) | **Hecho** | Command bar, módulos, notas, Lock; solo pantalla 2 |
+| Business rules en tarjetas | **Hecho** | `BusinessRuleCards.tsx` — usuario pide **menos protagonismo** (colapsar por default) |
+| risk_tier + wave en UI del plan | **Pendiente** | Backend listo; Step 5 / `WorkItemBoard` sin badges |
+| Strands SDK en exploración | **Pendiente** | Decisión de producto; ESS actual con asyncio |
+| Phase 2 agentica (reglas reales) | **Pendiente** | Stubs `deterministic_draft` en pack |
+| Dedup reglas BR-CALL duplicadas | **Pendiente** | Bug reportado (ej. x3 OperationsProgram) — backend `draft_business_rules` |
+
+**Siguiente diseño acordado (solo Step 2):** grafo interactivo como elemento principal; business rules en acordeón cerrado por default.
+
+ — para reenviar al agente de frontend / al usuario
 
 Convención: aquí deposito sugerencias de cambio que NO están en mi scope directo
 (frontend, o decisiones que el usuario quiere revisar antes). El usuario las
@@ -6,7 +22,7 @@ reenvía cuando corresponde. No implemento nada de esta lista sin que me lo pida
 
 ## Pendientes
 
-- **Diagrama de arquitectura inline en "Migration Modules".** Usuario pidió
+- ~~**Diagrama de arquitectura inline en "Migration Modules".**~~ **Parcial** — ver `ModuleCallGraph.tsx`. Usuario pidió
   verlo directo en esa pantalla, no en un link externo. Datos reales YA
   disponibles vía `GET /migration/{run_id}/exploration/pack` →
   `call_graph_resolved.edges` + `modules[].member_paths`. Renderizar con
@@ -47,8 +63,45 @@ reenvía cuando corresponde. No implemento nada de esta lista sin que me lo pida
   (`GET /migration/{run_id}/plan`) ya trae `work_items[].wave`. Sería útil
   que la vista del plan agrupe visualmente por wave (badge LOW/HIGH) en vez
   de listar todos los work items sin indicar orden de riesgo.
-- **Superficie para `exploration_sessions.draft_pack_json` en la UI.**
+- ~~**Superficie para `exploration_sessions.draft_pack_json` en la UI.**~~ **Hecho** (Step 2 ESS). Referencia histórica:
   Ya existe `GET /migration/{run_id}/exploration/pack`, `POST .../lock`,
   `POST .../modules/{id}/notes` — pero no vi vista dedicada. Sería el paso
   de "revisión humana" antes de Planning (igual al gate de arquitectura que
   ya existe).
+
+
+## Diseño Step 2 (aplicado en frontend)
+
+### Migration modules — dossier
+
+1. **CALL architecture** — subgrafo por `modules[].member_paths` + `call_graph_resolved.edges`
+   (componente `ModuleCallGraph.tsx`). Equivalente visual al Mermaid de arriba, sin dependencia
+   Mermaid en bundle.
+
+2. **Business rules** — ya no lista plana `ul.rule-list`. Tarjetas (`BusinessRuleCards.tsx`):
+   - Agrupadas por archivo COBOL (`main.cob`, `data.cob`, …).
+   - Título corto: `Paragraph · MAIN-LOGIC` o `External call · DATAPROG`.
+   - Badge **Draft** (ámbar) / Agent (violeta) / Confirmed (verde).
+   - Texto largo del stub solo en hint secundario; CTA ancla abre **FilePeek** en origen.
+   - Scroll acotado en dossier (`max-height` ~60vh) + “Show all N rules”.
+
+3. **Revisión humana** — notas por módulo sin cambio (`POST .../notes`); Lock pack alimenta planner.
+
+### Feedback del usuario sobre el diseño de arriba (2026-09-16)
+
+- **Menos protagonismo a Business Rules.** El usuario vio las tarjetas y las
+  encontró demasiado dominantes visualmente (mucho texto repetido — recordar
+  el bug real de duplicados en `BR-CALL-OperationsProgram` x3, ya reportado
+  arriba). El grafo CALL debe ser el elemento visual principal de la pantalla
+  de Exploración, business rules secundario/colapsado por default.
+- **Solo pantalla 2 (Exploración) por ahora** — no expandir a otras pantallas
+  todavía.
+- **Grafo embebido, no solo Mermaid-equivalente** — usuario pidió algo "como
+  plotly", es decir interactivo (zoom/pan/hover), no un diagrama estático.
+  Si `ModuleCallGraph.tsx` ya es interactivo (SVG/D3/react-flow), esto ya
+  está cubierto — si es estático, considerar upgrade.
+
+### Pendiente backend (mejora copy, no UI)
+
+- Sustituir stubs `draft_business_rules` por salida agentica Phase 2 (`source: agent`) con reglas
+  en inglés denso ancladas a párrafo — las tarjetas ya distinguen Draft vs Agent.

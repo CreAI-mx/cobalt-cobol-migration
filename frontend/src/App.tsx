@@ -24,8 +24,8 @@ const STEPS = [
   },
   {
     title: 'Exploration',
-    heading: 'See the system as it is',
-    lede: 'Deterministic discovery of files, structure and CALL graph — real tooling, no LLM in this step.',
+    heading: 'Map modules and agree on the COBOL estate',
+    lede: 'Run the exploration engine: structure, CALL graph, migration modules, and notes — then lock the pack to feed migration.',
   },
   {
     title: 'Architecture',

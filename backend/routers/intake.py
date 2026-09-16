@@ -307,7 +307,7 @@ async def intake(
 
 
 @router.get("/runs")
-async def list_runs(conn: aiosqlite.Connection = Depends(get_db), limit: int = 20):
+async def list_runs(conn: aiosqlite.Connection = Depends(get_db), limit: int = 50):
     """Execution history for the Onboarding screen — real runs, most recent
     first. `live` is the in-memory pipeline task (lazy import avoids a cycle
     with routers.pipeline)."""

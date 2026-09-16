@@ -296,7 +296,7 @@ Deterministic candidates (verify or replace): {drafts}
 
 
 async def extract_estate_relation_graph(
-    source_dir: Path, candidates: dict, timeout_s: int = 240,
+    source_dir: Path, candidates: dict, timeout_s: int = 360,
 ) -> tuple[dict, dict]:
     """Importers: exploration_orchestrator._agentic_relation_graph.
 
@@ -307,24 +307,29 @@ async def extract_estate_relation_graph(
     claude_bin = find_claude()
     if claude_bin is None:
         raise HeadlessInvocationError("claude CLI not found")
-    prompt = """Read the COBOL. Draw ONE pseudocode flowchart of the procedure.
-Not two diagrams. Not a CALL graph plus a paragraph graph.
+    prompt = """Read ALL COBOL under the origin source root. Produce ONE flowchart
+of the estate's control flow, as a programmer would sketch pseudocode.
 
-Each node is a step as a programmer would write it: DISPLAY, ACCEPT, OPEN,
-READ, IF, PERFORM UNTIL, CALL, CLOSE, STOP.
+Do NOT slice the diagram by file, script, folder, or PROGRAM-ID box-per-file.
+A monolith that arrives as a single .cbl must still explode: PROCEDURE
+paragraphs, PERFORM, PERFORM UNTIL, IF/ELSE, READ/AT END, CALL, STOP.
+Files exist only as evidence (`file:line`) on nodes.
+
+CALL/PERFORM to another paragraph or program continues in THIS same graph
+(the callee's steps), never as a second file swimlane.
+
 Node kinds: start | process | decision | loop | call | end | merge
 Edge kinds: next | yes | no | loop | exit
-seq = top-to-bottom reading order. label = short pseudocode.
+seq = top-to-bottom reading order. label = short pseudocode (verb + condition).
 
-Source root: {source_dir}
-Parse candidates (verify, then unify): {candidates}
+Origin root: {source_dir}
 
 Return JSON only:
-{{"schema":2,"generated_by":"agent","nodes":[{{"id":"s0","label":"ACCOUNT-LOOKUP","kind":"start","seq":0}}],"edges":[{{"source":"s0","target":"s1","kind":"next","label":""}}]}}
-""".format(source_dir=str(source_dir), candidates=json.dumps(candidates)[:24000])
+{{"schema":2,"generated_by":"agent","nodes":[{{"id":"s0","label":"start","kind":"start","seq":0,"evidence":["src/x.cbl:22"]}}],"edges":[{{"source":"s0","target":"s1","kind":"next","label":""}}]}}
+""".format(source_dir=str(source_dir))
     t0 = time.monotonic()
     proc = await asyncio.create_subprocess_exec(
-        claude_bin, "-p", prompt, "--output-format", "json", "--max-turns", "12",
+        claude_bin, "-p", prompt, "--output-format", "json", "--max-turns", "16",
         "--dangerously-skip-permissions", "--allowedTools", "Read,Grep,Glob",
         "--disallowedTools", "Bash,Write", "--add-dir", str(source_dir),
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,

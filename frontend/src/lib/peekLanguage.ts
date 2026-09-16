@@ -10,3 +10,13 @@ export function peekLanguage(path: string, kind: string | undefined, generated: 
   if (lower.endsWith('.csproj') || lower.endsWith('.xml')) return 'markup'
   return 'csharp'
 }
+
+/** Prism language for exploration AS-IS deliverables (Documentation panel + doc peek). */
+export function docDeliverableLanguage(path: string): string {
+  const lower = path.toLowerCase()
+  if (lower.endsWith('.md')) return 'markdown'
+  if (lower.endsWith('.json')) return 'json'
+  if (lower.endsWith('.csv')) return 'csv'
+  if (lower.endsWith('.xml')) return 'markup'
+  return 'markdown'
+}

@@ -1,0 +1,11 @@
+{
+    "schema_version": 2,
+    "commit": "c22147deeac1a41e3c79105fde65db0150cb2ed5",
+    "indexed_at": "2026-09-16T22:31:52Z",
+    "project": "home-frg-creai-cobol",
+    "nodes": 7075,
+    "edges": 13391,
+    "original_size": 15728640,
+    "compressed_size": 2546343,
+    "compression_level": 3
+}

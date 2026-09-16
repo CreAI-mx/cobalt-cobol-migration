@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import FileResponse
 import aiosqlite
 from ulid import ULID
 
@@ -43,6 +45,60 @@ async def _ensure_session(conn: aiosqlite.Connection, run_id: str) -> None:
     await conn.commit()
 
 
+
+def _documentation_root(run_id: str) -> Path:
+    return RUNS_DIR / run_id / "docs-cobol-accounting-system" / "docs"
+
+
+def _documentation_paths_on_disk(run_id: str) -> list[str]:
+    root = _documentation_root(run_id)
+    if not root.is_dir():
+        return []
+    return sorted(p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file())
+
+
+def _hydrate_pack_documentation(run_id: str, pack: dict | None) -> dict | None:
+    """Runs saved before documentation metadata was persisted may still have files on disk."""
+    if not pack:
+        return pack
+    paths = _documentation_paths_on_disk(run_id)
+    if not paths:
+        return pack
+    doc = dict(pack.get("documentation") or {})
+    existing = doc.get("documents") or []
+    if not existing or len(existing) < len(paths):
+        doc["documents"] = paths
+    doc.setdefault("scope", "Complete repository AS-IS exploration only; no TO-BE or migration artifacts")
+    doc.setdefault("root", str(_documentation_root(run_id)))
+    doc.setdefault("agent_status", doc.get("agent_status") or "hydrated from disk")
+    graph_path = _documentation_root(run_id) / "documentation_graph.json"
+    if graph_path.is_file() and not doc.get("graph"):
+        try:
+            doc["graph"] = json.loads(graph_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            pass
+    merged = dict(pack)
+    merged["documentation"] = doc
+    graph_file = RUNS_DIR / run_id / "exploration" / "estate_relation_graph.json"
+    if graph_file.is_file():
+        try:
+            merged["relation_graph"] = json.loads(graph_file.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            pass
+    source_root = RUNS_DIR / run_id / "source"
+    for prog in merged.get("programs") or []:
+        if prog.get("flow_nodes"):
+            continue
+        rel = prog.get("path") or ""
+        fp = source_root / rel
+        if not fp.is_file():
+            continue
+        nodes, edges = core.procedure_flowchart(fp.read_text(errors="replace"), prog.get("program_id"))
+        prog["flow_nodes"] = nodes
+        prog["flow_edges"] = edges
+    return merged
+
+
 async def _load_session(conn: aiosqlite.Connection, run_id: str) -> dict | None:
     cur = await conn.execute(
         "SELECT status, started_at, finished_at, draft_pack_json, locked_pack_json, locked_at "
@@ -54,6 +110,8 @@ async def _load_session(conn: aiosqlite.Connection, run_id: str) -> dict | None:
         return None
     draft = json.loads(row[3]) if row[3] else None
     locked = json.loads(row[4]) if row[4] else None
+    draft = _hydrate_pack_documentation(run_id, draft)
+    locked = _hydrate_pack_documentation(run_id, locked)
     return {
         "run_id": run_id,
         "status": row[0],
@@ -123,6 +181,65 @@ async def exploration_pack(run_id: str, conn: aiosqlite.Connection = Depends(get
     if not pack:
         raise HTTPException(404, "No exploration pack yet — run exploration first")
     return pack
+
+
+def _documentation_file(run_id: str, relative_path: str) -> Path:
+    root = _documentation_root(run_id).resolve()
+    candidate = (root / relative_path).resolve()
+    if not candidate.is_relative_to(root) or not candidate.is_file():
+        raise HTTPException(404, "Documentation file not found")
+    return candidate
+
+
+
+@router.get("/{run_id}/exploration/docs/manifest")
+async def exploration_docs_manifest(run_id: str):
+    """List AS-IS deliverables from disk (source of truth for the UI tree)."""
+    paths = _documentation_paths_on_disk(run_id)
+    if not paths:
+        raise HTTPException(404, "No exploration documentation on disk for this run")
+    root = _documentation_root(run_id)
+    corpus_manifest = root.parent / "analysis-corpus" / "CORPUS-MANIFEST.json"
+    corpus = None
+    if corpus_manifest.is_file():
+        try:
+            raw = json.loads(corpus_manifest.read_text(encoding="utf-8"))
+            corpus = {
+                "files_copied": int(raw.get("files_copied") or 0),
+                "archive_members_expanded": int(raw.get("archive_members_expanded") or 0),
+            }
+        except (json.JSONDecodeError, TypeError, ValueError):
+            corpus = None
+    agent_status = "on disk"
+    graph = None
+    graph_path = root / "documentation_graph.json"
+    if graph_path.is_file():
+        try:
+            graph = json.loads(graph_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            graph = None
+    return {
+        "run_id": run_id,
+        "documents": paths,
+        "agent_status": agent_status,
+        "corpus": corpus,
+        "graph": graph,
+    }
+
+@router.get("/{run_id}/exploration/docs.zip")
+async def exploration_docs_zip(run_id: str):
+    root = _documentation_root(run_id)
+    if not root.is_dir():
+        raise HTTPException(404, "No exploration documentation yet")
+    archive_base = RUNS_DIR / run_id / "exploration-documentation"
+    archive = Path(shutil.make_archive(str(archive_base), "zip", root_dir=root.parent, base_dir=root.name))
+    return FileResponse(archive, media_type="application/zip", filename="cobol-as-is-documentation.zip")
+
+
+@router.get("/{run_id}/exploration/docs/{relative_path:path}")
+async def exploration_document_file(run_id: str, relative_path: str):
+    target = _documentation_file(run_id, relative_path)
+    return FileResponse(target, filename=target.name)
 
 
 @router.post("/{run_id}/exploration/start", response_model=ExplorationSessionResponse)

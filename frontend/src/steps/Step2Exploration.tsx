@@ -1,78 +1,174 @@
-/** Step 2 — Exploration: FileTree (left) + structural summary (right).
- * Everything shown here is deterministic output from Phases 0/1/3 — file
- * counts from intake, CALL-site totals and the CALL graph straight from the
- * phase event details (no synthesized numbers). Next is gated on intake only
- * (App.tsx): Phase 3 may still be waiting behind Phase 2 on older runs. */
+/** Step 2 — Visual exploration: repo map + generated docs (no heavy graph panels). */
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import FilePeek from '../components/FilePeek'
 import FileTree from '../components/FileTree'
-import { GearIcon } from '../components/Icons'
+import EstateCompositionBar from '../components/EstateCompositionBar'
+import RepositoryLandscape from '../components/RepositoryLandscape'
+import DocumentationArchitecture from '../components/DocumentationArchitecture'
+import { SpinnerIcon } from '../components/Icons'
 import { useRun } from '../hooks/useMigrationEvents'
+import {
+  getExplorationStatus,
+  postExplorationLock,
+  type ExplorationSessionResponse,
+  type PhaseEvent,
+} from '../lib/api'
+
+const EXPLORE_PHASES = [
+  'Exploration · Discovery',
+  'Exploration · Structural',
+  'Exploration · Dependency',
+  'Exploration · Modules',
+  'Exploration · Business logic',
+  'Exploration · Graph',
+  'Exploration · Documentation',
+] as const
 
 export default function Step2Exploration() {
-  const { intake, phaseMap, fileStatus, live } = useRun()
+  const { intake, phaseMap, fileStatus, live, runId, startExploration, error } = useRun()
+  const [session, setSession] = useState<ExplorationSessionResponse | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [localError, setLocalError] = useState<string | null>(null)
+  const [peekPath, setPeekPath] = useState<string | null>(null)
+
+  const pack = session?.locked_pack ?? session?.draft_pack ?? null
+  const modules = pack?.modules ?? []
+
+  useEffect(() => {
+    if (!runId) return
+    let cancelled = false
+    const load = () => {
+      void getExplorationStatus(runId)
+        .then((s) => {
+          if (!cancelled) {
+            setSession(s)
+          }
+        })
+        .catch(() => {})
+    }
+    load()
+    const t = window.setInterval(load, session?.live || live ? 1500 : 4000)
+    return () => {
+      cancelled = true
+      window.clearInterval(t)
+    }
+  }, [runId, live, session?.live])
+
+  const explorePhaseMap = useMemo(() => {
+    const m = new Map<string, PhaseEvent>()
+    for (const [k, v] of phaseMap) {
+      if (k.startsWith('Exploration')) m.set(k, v)
+    }
+    return m
+  }, [phaseMap])
+
+  const structuralProgress = explorePhaseMap.get('Exploration · Structural')?.detail ?? ''
+  const essLive = Boolean(session?.live || live)
+
+  const onRun = useCallback(async () => {
+    if (!runId) return
+    setBusy(true)
+    setLocalError(null)
+    try {
+      await startExploration(runId)
+      setSession(await getExplorationStatus(runId))
+    } catch (e) {
+      setLocalError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }, [runId, startExploration])
+
+  const onLock = useCallback(async () => {
+    if (!runId) return
+    setBusy(true)
+    setLocalError(null)
+    try {
+      setSession(await postExplorationLock(runId))
+    } catch (e) {
+      setLocalError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }, [runId])
 
   if (!intake) return null
 
-  const p0 = phaseMap.get('Phase 0')
-  const p1 = phaseMap.get('Phase 1')
-  const p3 = phaseMap.get('Phase 3')
-  const running = (ev: typeof p0) => Boolean(live && ev?.status === 'RUNNING')
-
   return (
-    <div className="explore-layout">
-      <div className="card">
-        <h3>Repository tree</h3>
-        <FileTree tree={intake.tree} fileStatus={fileStatus} storageKey="cobalt.tree.explore" inspect="source" />
-      </div>
-
-      <div className="card">
-        <h3>Structural summary</h3>
-        <div className="stat-row">
-          <div className="stat">
-            <div className="value">{intake.total_files}</div>
-            <div className="label">Files</div>
-          </div>
-          <div className="stat">
-            <div className="value">{intake.cobol_files}</div>
-            <div className="label">COBOL programs</div>
-          </div>
+    <div className="explore-workspace">
+      <div className="explore-command-bar card">
+        <div className="explore-command-actions">
+          <button type="button" className="btn primary" disabled={busy || session?.status === 'LOCKED'} onClick={() => void onRun()}>
+            {busy && essLive ? <SpinnerIcon width={14} height={14} /> : null}
+            Run exploration
+          </button>
+          <button type="button" className="btn" disabled={busy || !pack || session?.status === 'LOCKED'} onClick={() => void onLock()}>
+            Lock &amp; feed migration
+          </button>
         </div>
-
-        <div className={`phase-block ${running(p0) ? 'is-running' : ''}`}>
-          <h3>
-            <GearIcon width={12} height={12} /> Phase 0 · Discovery
-          </h3>
-          <p className="mono muted">{p0 ? p0.detail : 'Idle — no discovery event yet.'}</p>
-          {running(p0) && <PhaseBar />}
-        </div>
-
-        <div className={`phase-block ${running(p1) ? 'is-running' : ''}`}>
-          <h3>
-            <GearIcon width={12} height={12} /> Phase 1 · Structural analysis
-          </h3>
-          <p className="mono muted">{p1 ? p1.detail : 'Idle — no analysis event yet.'}</p>
-          {running(p1) && <PhaseBar />}
-        </div>
-
-        <div className={`phase-block ${running(p3) ? 'is-running' : ''}`}>
-          <h3>
-            <GearIcon width={12} height={12} /> Phase 3 · CALL graph
-          </h3>
-          {p3 ? (
-            <p className="call-graph">{p3.detail}</p>
-          ) : (
-            <p className="mono muted">Idle — no CALL-graph event yet.</p>
+        <div className="explore-command-meta">
+          {essLive && (
+            <span className="chip live">
+              <span className="live-dot" /> LIVE
+            </span>
           )}
-          {running(p3) && <PhaseBar />}
+          <span className="mono muted">Session: {session?.status ?? 'DRAFT'}{structuralProgress ? ` · ${structuralProgress}` : ''}</span>
+          {pack && (
+            <span className="explore-command-stats mono muted">
+              {pack.inventory_summary.programs} pg · {modules.length} mod · {(pack.documentation?.documents ?? []).filter((d) => d.endsWith('.md')).length} docs
+            </span>
+          )}
         </div>
       </div>
+
+      {(localError || error) && <p className="explore-error" role="alert">{localError ?? error}</p>}
+
+      <div className="explore-layout explore-layout-2">
+        <div className="card explore-pane explore-pane--source">
+          <header className="explore-pane-head"><h3>Source tree</h3><p className="muted">COBOL intake · click to peek</p></header>
+          <FileTree tree={intake.tree} fileStatus={fileStatus} storageKey="cobalt.tree.explore" inspect="source" />
+          <div className="explore-source-pipeline">
+            <header className="explore-pane-head"><h3>Pipeline</h3><p className="muted">Exploration phases</p></header>
+            {EXPLORE_PHASES.map((name) => {
+              const ev = explorePhaseMap.get(name)
+              const agentic = name.includes('Business logic') || name.includes('Modules') || name.includes('Graph')
+              const running = essLive && ev?.status === 'RUNNING'
+              const ok = ev?.status === 'OK'
+              return (
+                <div key={name} className={`phase-strip${agentic ? ' is-agentic' : ''}${running ? ' is-running' : ''}`}>
+                  <span className={`phase-strip-dot${ok ? ' is-ok' : ''}${running ? ' is-run' : ''}`} aria-hidden />
+                  <span className="phase-strip-label">{name.replace('Exploration · ', '')}</span>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+
+        <div className="card explore-pane explore-center explore-center--visual">
+          <header className="explore-pane-head"><h3>Estate map</h3><p className="muted">One pseudocode flowchart</p></header>
+          {!pack ? (
+            <p className="muted">Run exploration to build the visual map.</p>
+          ) : (
+            <>
+              <EstateCompositionBar pack={pack} />
+              <RepositoryLandscape
+                pack={pack}
+                onSelectProgram={setPeekPath}
+                graphLive={essLive && explorePhaseMap.get('Exploration · Graph')?.status === 'RUNNING'}
+              />
+            </>
+          )}
+        </div>
+      </div>
+      {pack && (
+        <DocumentationArchitecture
+          pack={pack}
+          docPhaseLive={essLive && explorePhaseMap.get('Exploration · Documentation')?.status === 'RUNNING'}
+          layout="full"
+        />
+      )}
+      {peekPath && <FilePeek path={peekPath} mode="source" onClose={() => setPeekPath(null)} />}
     </div>
   )
 }
 
-function PhaseBar() {
-  return (
-    <div className="progress-track" aria-hidden>
-      <div className="progress-fill" />
-    </div>
-  )
-}

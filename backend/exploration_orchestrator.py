@@ -10,6 +10,8 @@ from pathlib import Path
 from ulid import ULID
 
 import exploration_core as core
+import exploration_documentation
+import llm
 from models import FileEvent, PhaseEvent
 from work_items import inventory_source
 
@@ -20,24 +22,6 @@ MAX_STRUCTURAL_PARALLEL = int(os.environ.get("COBALT_EXPLORATION_PARALLEL", "8")
 # Real per-token pricing for claude-sonnet-4-5 — logged to cost_logs so this
 # agentic pass is visible in the same spend accounting as every other phase
 # (user, verbatim: "quiero que se lleve contabilidad de cuanto lleva gastado").
-_PRICE_IN_PER_MTOK = 3.00
-_PRICE_OUT_PER_MTOK = 15.00
-_BUSINESS_RULES_MAX_TOKENS = 2000
-
-_AGENTIC_RULES_PROMPT = """You extract REAL business rules from this COBOL module,
-replacing the draft stubs below with concrete, specific rules — cite the exact
-paragraph or CALL site for each. Return ONLY a JSON array, no prose:
-[{{"id": "BR-...", "text": "<specific business rule, plain language>",
-"anchors": ["<file>:<paragraph or statement>"], "source": "agent"}}]
-
-Draft stubs (for context on what paragraphs/calls exist — replace, don't just repeat):
-{drafts}
-
-COBOL source:
-{source}
-"""
-
-
 async def _agentic_business_rules(
     source_dir: Path, member_paths: list[str], draft_rules: list[dict],
 ) -> tuple[list[dict], dict]:
@@ -46,61 +30,62 @@ async def _agentic_business_rules(
     Returns (rules, cost_meta). Falls back to the draft stubs unchanged (with
     a clear reason, never fabricated agent output) if no API key or the call
     fails — exploration must never block on this being unavailable."""
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    cost_meta = {"cost_usd": 0.0, "input_tokens": 0, "output_tokens": 0, "ok": False, "reason": ""}
-    if not api_key:
-        cost_meta["reason"] = "ANTHROPIC_API_KEY not set — kept deterministic drafts"
-        return draft_rules, cost_meta
-
-    from strands import Agent
-    from strands.models.anthropic import AnthropicModel
-
-    source_blob = "\n\n".join(
-        f"--- {p} ---\n{(source_dir / p).read_text(errors='replace')[:6000]}"
-        for p in member_paths
-    )
-    prompt = _AGENTIC_RULES_PROMPT.format(
-        drafts=json.dumps(draft_rules), source=source_blob[:16000],
-    )
-
-    def _call_sync():
-        model = AnthropicModel(
-            client_args={"api_key": api_key},
-            model_id="claude-sonnet-4-5-20250929",
-            max_tokens=_BUSINESS_RULES_MAX_TOKENS,
-        )
-        agent = Agent(model=model, tools=[])
-        return agent(prompt)
-
     try:
-        result = await asyncio.to_thread(_call_sync)
+        rules, cost_meta = await llm.extract_exploration_rules(source_dir, member_paths, draft_rules)
+    except llm.HeadlessInvocationError as exc:
+        cost_meta = {"cost_usd": exc.cost_usd, "input_tokens": exc.input_tokens, "output_tokens": exc.output_tokens,
+                     "latency_ms": exc.latency_ms, "ok": False, "reason": f"Claude Code failed: {exc}"[:200]}
+        return draft_rules, cost_meta
     except Exception as exc:
-        cost_meta["reason"] = f"agent call failed: {exc}"[:200]
+        cost_meta = {"cost_usd": 0.0, "input_tokens": 0, "output_tokens": 0,
+                     "latency_ms": 0, "ok": False, "reason": f"Claude Code failed: {exc}"[:200]}
         return draft_rules, cost_meta
-
-    usage = dict(result.metrics.accumulated_usage) if getattr(result, "metrics", None) else {}
-    inp = usage.get("inputTokens", usage.get("input_tokens", 0))
-    out = usage.get("outputTokens", usage.get("output_tokens", 0))
-    cost_meta.update({
-        "input_tokens": inp, "output_tokens": out,
-        "cost_usd": inp / 1_000_000 * _PRICE_IN_PER_MTOK + out / 1_000_000 * _PRICE_OUT_PER_MTOK,
-    })
-
-    text = str(result)
-    start, end = text.find("["), text.rfind("]")
-    if start == -1 or end <= start:
-        cost_meta["reason"] = "agent did not return a JSON array — kept deterministic drafts"
+    if not rules:
+        cost_meta["reason"] = "Claude Code returned no evidence-backed rules — kept deterministic drafts"
         return draft_rules, cost_meta
-    try:
-        rules = json.loads(text[start:end + 1])
-    except json.JSONDecodeError:
-        cost_meta["reason"] = "agent JSON parse failed — kept deterministic drafts"
-        return draft_rules, cost_meta
-    if not isinstance(rules, list) or not rules:
-        cost_meta["reason"] = "agent returned no rules — kept deterministic drafts"
-        return draft_rules, cost_meta
-    cost_meta["ok"] = True
     return rules, cost_meta
+
+
+def _relation_graph_path(run_id: str) -> Path:
+    return RUNS_DIR / run_id / "exploration" / "estate_relation_graph.json"
+
+
+async def _agentic_relation_graph(source_dir: Path, pack: dict) -> tuple[dict | None, dict]:
+    """Called from execute_exploration. Schema: relation_graph nodes/edges.
+    User: un diagrama de relacion secuencia uno solo, construido agenticamente."""
+    candidates = {
+        "programs": [
+            {
+                "path": p.get("path"),
+                "program_id": p.get("program_id"),
+                "paragraphs": p.get("paragraphs"),
+                "procedure_edges": p.get("procedure_edges"),
+                "call_targets": p.get("call_targets"),
+            }
+            for p in pack.get("programs") or []
+        ],
+        "calls": pack.get("call_graph_resolved", {}).get("edges", []),
+    }
+    try:
+        raw, cost_meta = await llm.extract_estate_relation_graph(source_dir, candidates)
+    except llm.HeadlessInvocationError as exc:
+        return None, {
+            "cost_usd": exc.cost_usd, "input_tokens": exc.input_tokens,
+            "output_tokens": exc.output_tokens, "latency_ms": exc.latency_ms,
+            "ok": False, "reason": f"Claude Code failed: {exc}"[:200],
+        }
+    except Exception as exc:
+        return None, {
+            "cost_usd": 0.0, "input_tokens": 0, "output_tokens": 0, "latency_ms": 0,
+            "ok": False, "reason": f"Claude Code failed: {exc}"[:200],
+        }
+    graph = core.normalize_relation_graph(raw)
+    graph["generated_by"] = "agent"
+    if not graph["nodes"]:
+        cost_meta["ok"] = False
+        cost_meta["reason"] = "agent returned an empty graph"
+        return None, cost_meta
+    return graph, cost_meta
 
 
 def _now() -> str:
@@ -285,3 +270,127 @@ async def execute_exploration(run_id: str, conn, events: list) -> None:
         status="OK" if any_ok else "SKIPPED",
         detail=f"total agent cost ${total_cost:.4f}" if any_ok else "no agent extraction ran — drafts kept",
     ))
+
+    events.append(PhaseEvent(
+        phase="Exploration · Graph", skill="cobol-relation-graph", status="RUNNING",
+        detail="agent constructing one relation + sequence graph",
+    ))
+    graph, graph_cost = await _agentic_relation_graph(source_dir, pack)
+    total_cost += graph_cost.get("cost_usd") or 0.0
+    if graph_cost.get("ok") and graph:
+        pack["relation_graph"] = graph
+        out_path = _relation_graph_path(run_id)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(graph, indent=2), encoding="utf-8")
+        await conn.execute(
+            "INSERT INTO cost_logs (log_id, run_id, phase, agent_id, input_tokens, "
+            "output_tokens, cost_usd, latency_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (str(ULID()), run_id, "Exploration · Graph", "claude-code-graph",
+             graph_cost["input_tokens"], graph_cost["output_tokens"], graph_cost["cost_usd"],
+             graph_cost.get("latency_ms") or 0, _now()),
+        )
+        events.append(PhaseEvent(
+            phase="Exploration · Graph", skill="cobol-relation-graph", status="OK",
+            detail=f"{len(graph['nodes'])} nodes · {len(graph['edges'])} edges (${graph_cost['cost_usd']:.4f})",
+        ))
+    else:
+        if graph_cost.get("cost_usd"):
+            await conn.execute(
+                "INSERT INTO cost_logs (log_id, run_id, phase, agent_id, input_tokens, "
+                "output_tokens, cost_usd, latency_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (str(ULID()), run_id, "Exploration · Graph", "claude-code-graph",
+                 graph_cost.get("input_tokens") or 0, graph_cost.get("output_tokens") or 0,
+                 graph_cost.get("cost_usd") or 0.0, graph_cost.get("latency_ms") or 0, _now()),
+            )
+        events.append(PhaseEvent(
+            phase="Exploration · Graph", skill="cobol-relation-graph", status="SKIPPED",
+            detail=graph_cost.get("reason") or "agent did not produce a relation graph",
+        ))
+    await conn.execute(
+        "UPDATE exploration_sessions SET draft_pack_json = ? WHERE run_id = ?",
+        (json.dumps(pack), run_id),
+    )
+    await conn.commit()
+
+    # Documentation is an AS-IS deliverable of exploration, not a migration
+    # phase. Build a deterministic, auditable skeleton first, then let the
+    # same Claude Code engine used by the migration flow enrich it from source.
+    docs_dir = RUNS_DIR / run_id / "docs-cobol-accounting-system" / "docs"
+    corpus_dir = docs_dir.parent / "analysis-corpus"
+    events.append(PhaseEvent(
+        phase="Exploration · Documentation", skill="as-is-documentation", status="RUNNING",
+        detail="building traceable Tier 1 and Tier 2 dossier",
+    ))
+    corpus_stats = exploration_documentation.prepare_repository_corpus(REPO_ROOT, corpus_dir)
+    doc_result = exploration_documentation.write_as_is_documentation(docs_dir, corpus_dir, pack)
+    graph_path = docs_dir / "documentation_graph.json"
+    graph = json.loads(graph_path.read_text(encoding="utf-8"))
+    pack["documentation"] = {
+        "scope": "Complete repository AS-IS exploration only; no TO-BE or migration artifacts",
+        "root": str(docs_dir),
+        "corpus": corpus_stats,
+        "documents": doc_result["documents"],
+        "agent_status": "deterministic skeleton",
+        "graph": graph,
+        "cost_usd": 0.0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+    }
+    # Publish the auditable skeleton before the long Claude Code pass so the
+    # UI exposes the corpus, graph and ZIP even while enrichment is running.
+    await conn.execute(
+        "UPDATE exploration_sessions SET draft_pack_json = ?, status = ? WHERE run_id = ?",
+        (json.dumps(pack), "REVIEW", run_id),
+    )
+    await conn.commit()
+    try:
+        reference_dir = REPO_ROOT / "docs-cobol-accounting-system" / "docs"
+        guide_path = REPO_ROOT / "GUIA-DOCUMENTACION-MIGRACION-COBOL-CSHARP.md"
+        result = await llm.write_exploration_docs(corpus_dir, docs_dir, guide_path, reference_dir)
+        closure_errors = exploration_documentation.validate_as_is_documentation(
+            docs_dir, corpus_dir, result.files_written,
+        )
+        if closure_errors:
+            raise RuntimeError("documentation closure failed: " + "; ".join(closure_errors[:4]))
+        pack["documentation"].update({
+            "documents": result.files_written,
+            "agent_status": "Claude Code complete",
+            "graph": json.loads(graph_path.read_text(encoding="utf-8")),
+            "cost_usd": result.cost_usd,
+            "input_tokens": result.input_tokens,
+            "output_tokens": result.output_tokens,
+        })
+        await conn.execute(
+            "INSERT INTO cost_logs (log_id, run_id, phase, agent_id, input_tokens, "
+            "output_tokens, cost_usd, latency_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (str(ULID()), run_id, "Exploration · Documentation", "claude-code-docs",
+             result.input_tokens, result.output_tokens, result.cost_usd, result.latency_ms, _now()),
+        )
+        events.append(PhaseEvent(
+            phase="Exploration · Documentation", skill="claude-code-as-is-docs", status="OK",
+            detail=f"{len(result.files_written)} AS-IS documents written (${result.cost_usd:.4f})",
+        ))
+    except llm.HeadlessInvocationError as exc:
+        await conn.execute(
+            "INSERT INTO cost_logs (log_id, run_id, phase, agent_id, input_tokens, "
+            "output_tokens, cost_usd, latency_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (str(ULID()), run_id, "Exploration · Documentation", "claude-code-docs",
+             exc.input_tokens, exc.output_tokens, exc.cost_usd, exc.latency_ms, _now()),
+        )
+        pack["documentation"]["agent_status"] = f"skeleton only: {str(exc)[:200]}"
+        pack["documentation"].update({"cost_usd": exc.cost_usd, "input_tokens": exc.input_tokens, "output_tokens": exc.output_tokens})
+        events.append(PhaseEvent(
+            phase="Exploration · Documentation", skill="claude-code-as-is-docs", status="SKIPPED",
+            detail=f"Claude Code failed after ${exc.cost_usd:.4f}; auditable skeleton retained",
+        ))
+    except Exception as exc:
+        pack["documentation"]["agent_status"] = f"skeleton only: {str(exc)[:200]}"
+        events.append(PhaseEvent(
+            phase="Exploration · Documentation", skill="claude-code-as-is-docs", status="SKIPPED",
+            detail=f"Claude Code unavailable; auditable skeleton retained: {str(exc)[:160]}",
+        ))
+    await conn.execute(
+        "UPDATE exploration_sessions SET draft_pack_json = ?, status = ?, finished_at = ? WHERE run_id = ?",
+        (json.dumps(pack), "REVIEW", _now(), run_id),
+    )
+    await conn.commit()

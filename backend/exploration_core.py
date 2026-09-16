@@ -72,12 +72,15 @@ def parse_structural(text: str) -> dict[str, Any]:
     calls = CALL_RE.findall(text)
     pid_m = PROGRAM_ID_RE.search(text)
     program_id = pid_m.group(1) if pid_m else None
+    flow_nodes, flow_edges = procedure_flowchart(text, program_id)
     return {
         "program_id": program_id,
         "divisions": divisions,
         "variables_json": variables,
         "paragraphs_json": paragraphs,
         "procedure_edges": procedure_edges,
+        "flow_nodes": flow_nodes,
+        "flow_edges": flow_edges,
         "calls": calls,
         "complexity_tier": _complexity_tier(text, variables),
     }
@@ -145,6 +148,182 @@ def procedure_flow(text: str) -> tuple[list[str], list[dict[str, str]]]:
             if nxt != src:
                 add(src, nxt, "next")
     return ordered, edges
+
+
+_FLOW_VERB = re.compile(
+    r"^\s*(DISPLAY|ACCEPT|OPEN|CLOSE|READ|REWRITE|MOVE|ADD|SUBTRACT|COMPUTE|CALL|"
+    r"IF|ELSE|END-IF|PERFORM|END-PERFORM|STOP|GOBACK|EXIT|GO)\b(.*)$",
+    re.IGNORECASE,
+)
+_FLOW_PARA = re.compile(r"^\s*([A-Z0-9][A-Z0-9-]*)\.\s*$")
+_AT_END = re.compile(r"^\s*AT\s+END\b(.*)$", re.IGNORECASE)
+
+
+def _flow_label(verb: str, rest: str) -> str:
+    blob = re.sub(r"\s+", " ", f"{verb} {rest}".strip()).rstrip(".")
+    return blob[:64]
+
+
+def procedure_flowchart(text: str, program_id: str | None = None) -> tuple[list[dict], list[dict]]:
+    """One pseudocode flowchart: statements, IF, PERFORM UNTIL, CALL — not two graphs."""
+    pid_m = PROGRAM_ID_RE.search(text)
+    pid = program_id or (pid_m.group(1) if pid_m else "PROGRAM")
+    proc = _procedure_section(text)
+    nodes: list[dict] = []
+    edges: list[dict] = []
+
+    def add(kind: str, label: str, line: int) -> str:
+        nid = f"s{len(nodes)}"
+        nodes.append({"id": nid, "label": label, "kind": kind, "seq": len(nodes), "line": line})
+        return nid
+
+    def link(src: str | None, dst: str | None, kind: str = "next", label: str = "") -> None:
+        if not src or not dst:
+            return
+        edges.append({"source": src, "target": dst, "kind": kind, "label": label})
+
+    start = add("start", pid, 1)
+    if not proc.strip():
+        add("end", "STOP", 1)
+        link(start, nodes[-1]["id"])
+        return nodes, edges
+
+    stmts: list[tuple[str, str, int]] = []
+    for i, raw in enumerate(proc.splitlines(), start=text[: text.lower().find("procedure")].count("\n") + 2):
+        line = raw.rstrip()
+        if not line.strip() or line.strip().startswith("*"):
+            continue
+        pm = _FLOW_PARA.match(line)
+        if pm:
+            name = pm.group(1).upper()
+            if name not in _RESERVED_PARA and name not in {"STOP", "EXIT", "CONTINUE", "GOBACK"}:
+                stmts.append(("PARA", name, i))
+            continue
+        am = _AT_END.match(line)
+        if am:
+            stmts.append(("AT-END", am.group(1).strip().rstrip("."), i))
+            continue
+        vm = _FLOW_VERB.match(line)
+        if vm:
+            stmts.append((vm.group(1).upper().replace(" ", "-"), vm.group(2).strip().rstrip("."), i))
+
+    prev: str | None = start
+    stack: list[tuple[str, str, str | None]] = []
+    skip_until_end_read = False
+
+    for verb, rest, line in stmts:
+        if skip_until_end_read and verb not in {"AT-END", "END-READ"}:
+            if verb == "END-IF":
+                pass
+            elif rest.upper().startswith("END-READ") or verb.startswith("END"):
+                skip_until_end_read = False
+                continue
+        upper_rest = rest.upper()
+
+        if verb == "PARA":
+            nid = add("process", rest, line)
+            link(prev, nid)
+            prev = nid
+            continue
+        if verb in {"STOP", "GOBACK"} or (verb == "EXIT" and "PROGRAM" in upper_rest):
+            nid = add("end", "STOP", line)
+            link(prev, nid)
+            prev = nid
+            continue
+        if verb == "PERFORM" and re.match(r"UNTIL\b", rest, re.I):
+            cond = re.sub(r"^UNTIL\s+", "", rest, flags=re.I)
+            nid = add("loop", f"until {cond}", line)
+            link(prev, nid)
+            stack.append(("loop", nid, prev))
+            prev = nid
+            continue
+        if verb == "END-PERFORM":
+            kind_s, loop_id, _ = stack.pop() if stack and stack[-1][0] == "loop" else ("", "", None)
+            if loop_id:
+                link(prev, loop_id, "loop", "repeat")
+                prev = loop_id
+            continue
+        if verb == "IF":
+            cond = re.sub(r"\s+THEN$", "", rest, flags=re.I)
+            nid = add("decision", f"{cond}?", line)
+            prev_node = next((n for n in nodes if n["id"] == prev), None)
+            edge_kind = "no" if prev_node and prev_node.get("label") == "AT END?" else "next"
+            if stack and stack[-1][0] == "if" and prev == stack[-1][1]:
+                edge_kind = "yes"
+            elif stack and stack[-1][0] == "else" and prev == stack[-1][1]:
+                edge_kind = "no"
+            link(prev, nid, edge_kind, edge_kind if edge_kind != "next" else "")
+            stack.append(("if", nid, None))
+            prev = nid
+            continue
+        if verb == "ELSE":
+            if stack and stack[-1][0] == "if":
+                dec = stack[-1][1]
+                stack[-1] = ("else", dec, prev)
+                prev = dec
+            continue
+        if verb == "END-IF":
+            frame = stack.pop() if stack and stack[-1][0] in {"if", "else"} else None
+            if frame:
+                dec, then_end = frame[1], frame[2]
+                join = add("merge", "", line)
+                if frame[0] == "else":
+                    link(then_end, join, "next")
+                    link(prev, join, "next")
+                else:
+                    link(prev, join, "yes" if prev != dec else "next")
+                    link(dec, join, "no")
+                prev = join
+            continue
+        if verb == "CALL":
+            target = rest.strip().strip("'\"")
+            nid = add("call", f"CALL {target}", line)
+            link(prev, nid)
+            prev = nid
+            continue
+        if verb == "PERFORM" and rest and not re.match(r"UNTIL|VARYING|WITH\s+TEST", rest, re.I):
+            target = rest.split()[0]
+            nid = add("call", f"PERFORM {target}", line)
+            kind = "yes" if stack and stack[-1][0] == "if" and prev == stack[-1][1] else "next"
+            if stack and stack[-1][0] == "else" and prev == stack[-1][1]:
+                kind = "no"
+            elif stack and stack[-1][0] == "if" and prev == stack[-1][1]:
+                kind = "yes"
+            link(prev, nid, kind if kind in {"yes", "no"} else "next", kind if kind in {"yes", "no"} else "")
+            prev = nid
+            continue
+        if verb == "AT-END":
+            nid = add("decision", "AT END?", line)
+            link(prev, nid)
+            action = _flow_label("AT END", rest) if rest else "exit loop"
+            yes = add("process", action or "exit loop", line)
+            link(nid, yes, "yes", "yes")
+            loops = [s[1] for s in stack if s[0] == "loop"]
+            if loops:
+                link(yes, loops[-1], "exit", "exit")
+            prev = nid
+            continue
+        if verb in {"END-READ"}:
+            continue
+
+        nid = add("process", _flow_label(verb, rest), line)
+        kind = "next"
+        label = ""
+        prev_node = next((n for n in nodes if n["id"] == prev), None)
+        if prev_node and prev_node.get("label") == "AT END?":
+            kind, label = "no", "no"
+        elif stack and prev == stack[-1][1]:
+            if stack[-1][0] == "if":
+                kind, label = "yes", "yes"
+            elif stack[-1][0] == "else":
+                kind, label = "no", "no"
+        link(prev, nid, kind, label)
+        prev = nid
+
+    if prev and nodes[-1]["kind"] != "end":
+        end = add("end", "STOP", nodes[-1].get("line") or 1)
+        link(prev, end)
+    return nodes, edges
 
 
 def build_graph_edges(files) -> tuple[list[dict], list[str]]:
@@ -303,6 +482,8 @@ def build_exploration_pack(
                 "complexity_tier": struct["complexity_tier"],
                 "paragraphs": struct["paragraphs_json"][:48],
                 "procedure_edges": struct.get("procedure_edges", []),
+                "flow_nodes": struct.get("flow_nodes", []),
+                "flow_edges": struct.get("flow_edges", []),
                 "call_targets": list(dict.fromkeys(struct["calls"])),
                 "loc": f.loc,
             }
@@ -337,4 +518,71 @@ def build_exploration_pack(
                 "Preserve CALL graph boundaries as migration modules unless architecture workshop overrides.",
             ],
         },
+    }
+
+
+RELATION_NODE_KINDS = frozenset({
+    "program", "paragraph", "data", "external",
+    "start", "process", "decision", "loop", "call", "end", "merge",
+})
+RELATION_EDGE_KINDS = frozenset({
+    "call", "perform", "next", "loop", "goto", "reads", "writes", "yes", "no", "exit",
+})
+
+
+def normalize_relation_graph(raw: dict | None) -> dict:
+    """Accept only a relation+sequence graph. Drop invented kinds and dangling edges."""
+    payload = raw if isinstance(raw, dict) else {}
+    nodes: list[dict] = []
+    seen: set[str] = set()
+    for item in payload.get("nodes") or []:
+        if not isinstance(item, dict) or not item.get("id"):
+            continue
+        node_id = str(item["id"])
+        if node_id in seen:
+            continue
+        seen.add(node_id)
+        kind = item.get("kind")
+        if kind not in RELATION_NODE_KINDS:
+            continue
+        try:
+            rank = int(item.get("rank") or 0)
+        except (TypeError, ValueError):
+            rank = 0
+        try:
+            seq = int(item.get("seq") or 0)
+        except (TypeError, ValueError):
+            seq = 0
+        evidence = [str(x) for x in (item.get("evidence") or []) if x][:8]
+        nodes.append({
+            "id": node_id,
+            "label": str(item.get("label") or node_id)[:80],
+            "kind": kind,
+            "rank": rank,
+            "seq": seq,
+            "path": item.get("path") or None,
+            "evidence": evidence,
+        })
+    ids = {n["id"] for n in nodes}
+    edges: list[dict] = []
+    for item in payload.get("edges") or []:
+        if not isinstance(item, dict):
+            continue
+        source, target = str(item.get("source") or ""), str(item.get("target") or "")
+        if source not in ids or target not in ids or source == target and item.get("kind") not in {"loop"}:
+            if source not in ids or target not in ids:
+                continue
+        kind = item.get("kind") if item.get("kind") in RELATION_EDGE_KINDS else "next"
+        edges.append({
+            "source": source,
+            "target": target,
+            "kind": kind,
+            "evidence": [str(x) for x in (item.get("evidence") or []) if x][:8],
+        })
+    generated = payload.get("generated_by")
+    return {
+        "schema": 2,
+        "generated_by": generated if generated in {"agent", "deterministic_fallback"} else "agent",
+        "nodes": nodes,
+        "edges": edges,
     }

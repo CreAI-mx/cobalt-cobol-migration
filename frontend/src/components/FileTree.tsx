@@ -14,6 +14,7 @@ import { BUILD_TAG_LABEL, folderTally } from '../lib/estateBuild'
 import type { FileMapping } from '../lib/targetArchitecture'
 import { ChevronIcon, FileIcon, FolderIcon } from './Icons'
 import FilePeek from './FilePeek'
+import ExplorationDocPeek from './ExplorationDocPeek'
 import { useRun } from '../hooks/useMigrationEvents'
 
 interface Props {
@@ -31,8 +32,13 @@ interface Props {
   defaultExpandAll?: boolean
   /** Click a file to open the peek modal. `source` reads intake bytes;
    * `proposal` shows a brief of what will be generated (nothing on disk). */
-  inspect?: 'source' | 'proposal'
+  inspect?: 'source' | 'proposal' | 'exploration-doc'
   mappings?: FileMapping[]
+  /** Required when inspect="exploration-doc" */
+  explorationRunId?: string
+  /** When set, file clicks call this instead of opening a peek modal. */
+  onFileInspect?: (path: string) => void
+  selectedInspectPath?: string | null
 }
 
 const EMPTY_STATUS: Map<string, string> = new Map()
@@ -171,6 +177,9 @@ export default function FileTree({
   defaultExpandAll = false,
   inspect,
   mappings,
+  explorationRunId,
+  onFileInspect,
+  selectedInspectPath,
 }: Props) {
   const { live } = useRun()
   const animate = live
@@ -267,11 +276,11 @@ export default function FileTree({
       <button
         type="button"
         key={path}
-        className={`tree-row file ${node.is_cobol ? 'cobol' : ''}${clickable ? ' clickable' : ''}${busy ? ' building' : ''}${settled ? ' built' : ''}`}
+        className={`tree-row file ${node.is_cobol ? 'cobol' : ''}${clickable ? ' clickable' : ''}${busy ? ' building' : ''}${settled ? ' built' : ''}${selectedInspectPath === path ? ' is-inspect-selected' : ''}`}
         style={indent}
         title={status ? `${path} — ${status}` : path}
         data-tree-path={path}
-        onClick={clickable ? () => setPeekPath(path) : undefined}
+        onClick={clickable ? () => (onFileInspect ? onFileInspect(path) : setPeekPath(path)) : undefined}
       >
         <span className={dotClass(busy ? 'IN-PROGRESS' : typeof status === 'string' && !tag ? status : tag, animate)} />
         <FileIcon width={13} height={13} />
@@ -286,7 +295,10 @@ export default function FileTree({
   return (
     <div className="file-tree">
       {(tree.children ?? []).map((c) => renderNode(c, c.name, 0))}
-      {peekPath && inspect && (
+      {peekPath && inspect === 'exploration-doc' && explorationRunId && !onFileInspect && (
+        <ExplorationDocPeek runId={explorationRunId} path={peekPath} onClose={() => setPeekPath(null)} />
+      )}
+      {peekPath && inspect && inspect !== 'exploration-doc' && (
         <FilePeek
           key={peekPath}
           path={peekPath}

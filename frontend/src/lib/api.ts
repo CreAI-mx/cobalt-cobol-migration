@@ -173,7 +173,7 @@ export interface RunHistoryEntry {
   live?: boolean
 }
 
-export async function listRuns(limit = 20): Promise<RunHistoryEntry[]> {
+export async function listRuns(limit = 50): Promise<RunHistoryEntry[]> {
   const res = await fetch(`/migration/runs?limit=${limit}`);
   return parseOrThrow<RunHistoryEntry[]>(res);
 }
@@ -403,4 +403,155 @@ export async function getPlan(runId: string): Promise<MigrationPlan> {
 export async function postPlan(runId: string): Promise<MigrationPlan> {
   const res = await fetch(`/migration/${encodeURIComponent(runId)}/plan`, { method: 'POST' })
   return parseOrThrow<MigrationPlan>(res)
+}
+
+export interface FlowNode {
+  id: string
+  label: string
+  kind: 'start' | 'process' | 'decision' | 'loop' | 'call' | 'end' | 'merge'
+  seq: number
+  line?: number
+}
+
+export interface FlowEdge {
+  source: string
+  target: string
+  kind: string
+  label?: string
+}
+
+export interface ExplorationProgram {
+  path: string
+  program_id?: string | null
+  module_id?: string | null
+  complexity_tier?: string
+  paragraphs?: string[]
+  procedure_edges?: { from: string; to: string; kind: string }[]
+  flow_nodes?: FlowNode[]
+  flow_edges?: FlowEdge[]
+  call_targets?: string[]
+  loc?: number
+}
+
+export interface RelationGraphNode {
+  id: string
+  label: string
+  kind: 'program' | 'paragraph' | 'data' | 'external' | 'start' | 'process' | 'decision' | 'loop' | 'call' | 'end' | 'merge'
+  rank?: number
+  seq?: number
+  path?: string | null
+  evidence?: string[]
+}
+
+export interface RelationGraph {
+  schema: number
+  generated_by?: string
+  nodes: RelationGraphNode[]
+  edges: { source: string; target: string; kind: string; evidence?: string[] }[]
+}
+
+export interface ExplorationModule {
+  module_id: string
+  title: string
+  source_program_ids: string[]
+  member_paths: string[]
+  entrypoint_program_id?: string | null
+  entrypoint_path?: string | null
+  conversion_order_hint: number
+  suggested_target_projects: string[]
+  business_rules: { id: string; text: string; anchors: string[]; source?: string }[]
+  risks: string[]
+  human_notes: string
+}
+
+export interface ExplorationPack {
+  exploration_pack_schema: number
+  run_id: string
+  locked_at: string | null
+  inventory_summary: { files: number; programs: number; copybooks: number }
+  modules: ExplorationModule[]
+  programs?: ExplorationProgram[]
+  call_graph_resolved: { edges: { from_path: string; to_path: string; edge_type: string; target_program_id?: string }[] }
+  relation_graph?: RelationGraph
+  open_items: { id: string; text: string; status: string }[]
+  planner_seed: { work_item_hints: unknown[]; directive_fragments: string[] }
+  documentation?: {
+    scope: string
+    root: string
+    documents: string[]
+    agent_status: string
+    corpus?: { files_copied: number; archive_members_expanded: number }
+    cost_usd?: number
+    input_tokens?: number
+    output_tokens?: number
+    graph: {
+      schema: number
+      generated_by?: string
+      nodes: { id: string; label: string; kind: 'program' | 'rule' | 'risk' | 'question' | 'document'; x: number; y: number; evidence?: string[] }[]
+      edges: { source: string; target: string; kind: string; evidence?: string[] }[]
+    }
+  }
+}
+
+export function explorationDocsZipUrl(runId: string): string {
+  return `/migration/${encodeURIComponent(runId)}/exploration/docs.zip`
+}
+
+export function explorationDocumentUrl(runId: string, path: string): string {
+  return `/migration/${encodeURIComponent(runId)}/exploration/docs/${path.split('/').map(encodeURIComponent).join('/')}`
+}
+
+export interface ExplorationSessionResponse {
+  run_id: string
+  status: string
+  started_at: string | null
+  finished_at: string | null
+  draft_pack: ExplorationPack | null
+  locked_pack: ExplorationPack | null
+  locked_at: string | null
+  live: boolean
+}
+
+export interface ExplorationDocsManifest {
+  run_id: string
+  documents: string[]
+  agent_status: string
+  corpus?: { files_copied: number; archive_members_expanded: number }
+}
+
+export async function getExplorationDocsManifest(runId: string): Promise<ExplorationDocsManifest | null> {
+  const res = await fetch(`/migration/${encodeURIComponent(runId)}/exploration/docs/manifest`)
+  if (res.status === 404) return null
+  return parseOrThrow<ExplorationDocsManifest>(res)
+}
+
+export async function getExplorationStatus(runId: string): Promise<ExplorationSessionResponse> {
+  const res = await fetch(`/migration/${encodeURIComponent(runId)}/exploration/status`)
+  return parseOrThrow<ExplorationSessionResponse>(res)
+}
+
+export async function postExplorationStart(runId: string): Promise<ExplorationSessionResponse> {
+  const res = await fetch(`/migration/${encodeURIComponent(runId)}/exploration/start`, { method: 'POST' })
+  return parseOrThrow<ExplorationSessionResponse>(res)
+}
+
+export async function postExplorationLock(runId: string): Promise<ExplorationSessionResponse> {
+  const res = await fetch(`/migration/${encodeURIComponent(runId)}/exploration/lock`, { method: 'POST' })
+  return parseOrThrow<ExplorationSessionResponse>(res)
+}
+
+export async function postModuleNotes(
+  runId: string,
+  moduleId: string,
+  text: string,
+): Promise<{ module_id: string; human_notes: string }> {
+  const res = await fetch(
+    `/migration/${encodeURIComponent(runId)}/exploration/modules/${encodeURIComponent(moduleId)}/notes`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    },
+  )
+  return parseOrThrow(res)
 }
