@@ -577,7 +577,12 @@ _MVP_DOCS_PROMPT = """Write exactly two files, nothing else:
 README.md (solution root) — a NUMBERED step-by-step list (1. 2. 3. ...) for
 how to `dotnet build`, `dotnet test`, and run the CLI — never prose
 paragraphs for these steps, a reader must be able to follow them in order
-without re-reading.
+without re-reading. Prerequisites section must include REAL install
+commands for .NET 8 SDK per OS (e.g. `brew install --cask dotnet-sdk` on
+macOS, `sudo apt install dotnet-sdk-8.0` on Ubuntu/Debian,
+https://dotnet.microsoft.com/download/dotnet/8.0 otherwise) — never just
+name "the .NET 8 SDK" as a bare assumed prerequisite with no install step,
+a reader without it must be able to get it from this file alone.
 docs/MIGRATION.md — COBOL→C# decisions, traceability (each handler ← COBOL
 PROGRAM-ID), limitations. English, dense, factual.
 
