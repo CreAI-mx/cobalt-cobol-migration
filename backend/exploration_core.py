@@ -21,6 +21,19 @@ from work_items import (
 
 DIVISION_RE = re.compile(r"^\s*(\w+(?:\s+\w+)*)\s+DIVISION\s*\.", re.MULTILINE | re.IGNORECASE)
 PARAGRAPH_RE = re.compile(r"^\s*([A-Z0-9][A-Z0-9-]*)\.\s*$", re.MULTILINE)
+PROCEDURE_RE = re.compile(r"PROCEDURE\s+DIVISION", re.IGNORECASE)
+PERFORM_NAMED_RE = re.compile(
+    r"\bPERFORM\s+([A-Z0-9][A-Z0-9-]*)(?:\s+THROUGH|\s+THRU\s+([A-Z0-9][A-Z0-9-]*))?",
+    re.IGNORECASE,
+)
+PERFORM_LOOP_RE = re.compile(r"\bPERFORM\s+(UNTIL|VARYING|WITH\s+TEST)\b", re.IGNORECASE)
+GOTO_RE = re.compile(r"\bGO\s+TO\s+([A-Z0-9][A-Z0-9-]*)", re.IGNORECASE)
+STOP_RE = re.compile(r"\b(STOP\s+RUN|GOBACK|EXIT\s+PROGRAM)\b", re.IGNORECASE)
+_RESERVED_PARA = {
+    "IDENTIFICATION", "ENVIRONMENT", "DATA", "PROCEDURE", "FILE-CONTROL",
+    "FILE", "WORKING-STORAGE", "LINKAGE", "CONFIGURATION", "INPUT-OUTPUT",
+    "SPECIAL-NAMES", "SOURCE-COMPUTER", "OBJECT-COMPUTER",
+}
 PIC_FIELD_RE = re.compile(
     r"^\s*(\d+\s+)?([A-Z0-9][A-Z0-9-]*)\s+PIC\s+([^.]+)\.",
     re.MULTILINE | re.IGNORECASE,
@@ -55,7 +68,7 @@ def parse_structural(text: str) -> dict[str, Any]:
         if REDEFINES_RE.search(line):
             tag.append("REDEFINES")
         variables.append({"name": name, "pic": pic, "tags": tag})
-    paragraphs = [m.group(1) for m in PARAGRAPH_RE.finditer(text)]
+    paragraphs, procedure_edges = procedure_flow(text)
     calls = CALL_RE.findall(text)
     pid_m = PROGRAM_ID_RE.search(text)
     program_id = pid_m.group(1) if pid_m else None
@@ -64,9 +77,74 @@ def parse_structural(text: str) -> dict[str, Any]:
         "divisions": divisions,
         "variables_json": variables,
         "paragraphs_json": paragraphs,
+        "procedure_edges": procedure_edges,
         "calls": calls,
         "complexity_tier": _complexity_tier(text, variables),
     }
+
+
+
+def _procedure_section(text: str) -> str:
+    m = PROCEDURE_RE.search(text)
+    return text[m.end():] if m else ""
+
+
+def procedure_flow(text: str) -> tuple[list[str], list[dict[str, str]]]:
+    """Named paragraphs after PROCEDURE DIVISION plus PERFORM/GO TO/loop edges."""
+    proc = _procedure_section(text)
+    if not proc.strip():
+        return [], []
+    blocks: list[tuple[str, str]] = []
+    current = "PROCEDURE"
+    buf: list[str] = []
+    for line in proc.splitlines():
+        hm = PARAGRAPH_RE.match(line)
+        name = hm.group(1).upper() if hm else ""
+        if hm and name not in _RESERVED_PARA and name not in {"STOP", "EXIT", "CONTINUE", "GOBACK"}:
+            blocks.append((current, "\n".join(buf)))
+            current = name
+            buf = []
+        else:
+            buf.append(line)
+    blocks.append((current, "\n".join(buf)))
+    ordered: list[str] = []
+    for n, _ in blocks:
+        if n not in ordered:
+            ordered.append(n)
+    if ordered == ["PROCEDURE"] and not blocks[0][1].strip():
+        return [], []
+    edges: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    def add(src: str, dst: str, kind: str) -> None:
+        key = (src, dst, kind)
+        if key in seen:
+            return
+        seen.add(key)
+        edges.append({"from": src, "to": dst, "kind": kind})
+
+    para_set = {n for n, _ in blocks}
+    for i, (src, body) in enumerate(blocks):
+        if PERFORM_LOOP_RE.search(body):
+            add(src, src, "loop")
+        for m in PERFORM_NAMED_RE.finditer(body):
+            target = m.group(1).upper()
+            if target in {"UNTIL", "VARYING", "WITH", "TEST"}:
+                continue
+            if target in para_set:
+                add(src, target, "perform")
+            thru = m.group(2)
+            if thru and thru.upper() in para_set:
+                add(src, thru.upper(), "thru")
+        for m in GOTO_RE.finditer(body):
+            dest = m.group(1).upper()
+            if dest in para_set:
+                add(src, dest, "goto")
+        if i + 1 < len(blocks) and not STOP_RE.search(body):
+            nxt = blocks[i + 1][0]
+            if nxt != src:
+                add(src, nxt, "next")
+    return ordered, edges
 
 
 def build_graph_edges(files) -> tuple[list[dict], list[str]]:
@@ -105,11 +183,16 @@ def modules_from_groups(groups, sln: str) -> list[dict]:
     for i, group in enumerate(groups, start=1):
         paths = [f.path for f in group]
         pids = [f.program_id for f in group if f.program_id]
-        entry = group[0]
+        path_set = {f.path for f in group}
+        pid_by_path = {f.path: (f.program_id or "").upper() for f in group}
+        targets_in = set()
         for f in group:
-            if not f.calls:
-                entry = f
-                break
+            for t in f.calls:
+                for g in group:
+                    if g.program_id and g.program_id.upper() == t.upper():
+                        targets_in.add(g.path)
+        roots = [f for f in group if f.path not in targets_in]
+        entry = sorted(roots, key=lambda x: x.path)[0] if roots else sorted(group, key=lambda x: x.path)[0]
         title_parts = [pascal_stem(f.program_id or Path(f.path).stem) for f in group]
         title = title_parts[0] if len(title_parts) == 1 else " + ".join(title_parts[:3])
         suggested = []
@@ -145,7 +228,11 @@ def draft_business_rules(struct: dict, path: str) -> list[dict]:
                 "source": "deterministic_draft",
             }
         )
+    seen_calls: set[str] = set()
     for call in struct.get("calls", []):
+        if call in seen_calls:
+            continue
+        seen_calls.add(call)
         rules.append(
             {
                 "id": f"BR-CALL-{call}",
@@ -192,6 +279,35 @@ def build_exploration_pack(
         mod["business_rules"] = mod_rules
         mod["risks"] = sorted(set(mod_risks))
 
+    path_to_module: dict[str, str] = {}
+    for mod in modules:
+        for p in mod["member_paths"]:
+            path_to_module[p] = mod["module_id"]
+    programs_catalog: list[dict] = []
+    data_dictionary: list[dict] = []
+    for f in cobol:
+        text = (source_dir / f.path).read_text(errors="replace")
+        struct = parse_structural(text)
+        for v in struct["variables_json"]:
+            data_dictionary.append({
+                "name": v.get("name", "—"),
+                "pic": v.get("pic", "—"),
+                "tags": v.get("tags", []),
+                "path": f.path,
+            })
+        programs_catalog.append(
+            {
+                "path": f.path,
+                "program_id": f.program_id or struct.get("program_id"),
+                "module_id": path_to_module.get(f.path),
+                "complexity_tier": struct["complexity_tier"],
+                "paragraphs": struct["paragraphs_json"][:48],
+                "procedure_edges": struct.get("procedure_edges", []),
+                "call_targets": list(dict.fromkeys(struct["calls"])),
+                "loc": f.loc,
+            }
+        )
+
     topo = [e["from_path"] for e in edges]
     return {
         "exploration_pack_schema": 1,
@@ -203,6 +319,8 @@ def build_exploration_pack(
             "copybooks": len(copybooks),
         },
         "modules": modules,
+        "programs": programs_catalog,
+        "data_dictionary": data_dictionary,
         "call_graph_resolved": {"edges": edges, "topological_order": topo},
         "open_items": [{"id": str(ULID()), "text": t, "status": "open"} for t in open_items],
         "planner_seed": {
