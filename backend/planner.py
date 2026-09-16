@@ -6,8 +6,10 @@ User: un Claude Code analiza el repo una sola vez y devuelve un manifiesto.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
+import aiosqlite
 from ulid import ULID
 
 import llm
@@ -27,7 +29,7 @@ Documentation is exactly README.md and MIGRATION.md, last, after build/tests.
 
 Inventory (compact — do not ask to re-read the repo):
 {inventory}
-
+{exploration_section}
 JSON schema:
 {{
   "summary": "<one line: N COBOL, copybooks, conversion units>",
@@ -53,7 +55,61 @@ expected_paths rules:
 - documentation: only README.md and MIGRATION.md
 - never .md except the documentation work item
 - never frontend, app-here, or node paths
+
+If the exploration section below is present:
+- Assign `wave` ascending by risk_tier — every LOW-risk module's work items
+  get a lower wave than any HIGH-risk module's, so low-complexity/low-risk
+  code converts first (industry practice: start with low complexity, validate
+  the toolchain, before touching risky modules).
+- Reuse the listed business_rules verbatim as context for that module's
+  conversion work item — they were already extracted, do not re-derive or
+  contradict them.
 """
+
+
+async def _load_locked_pack(conn: aiosqlite.Connection, run_id: str) -> dict | None:
+    """Reads the LOCKED output of the isolated Exploration subsystem
+    (routers/exploration.py, exploration_sessions.draft_pack_json) — the
+    concrete "output of exploration is an input of the migration flow" wiring.
+    Returns None if exploration was never run or not yet locked; the planner
+    stays fully functional without it (exploration is optional)."""
+    cursor = await conn.execute(
+        "SELECT draft_pack_json FROM exploration_sessions WHERE run_id = ? AND status = 'LOCKED'",
+        (run_id,),
+    )
+    row = await cursor.fetchone()
+    if not row or not row[0]:
+        return None
+    try:
+        return json.loads(row[0])
+    except json.JSONDecodeError:
+        return None
+
+
+def _module_risk_tier(module: dict) -> str:
+    risks = module.get("risks") or []
+    return "HIGH" if any(
+        r.upper().startswith("HIGH") or "COMP-3" in r.upper() or "REDEFINES" in r.upper()
+        for r in risks
+    ) else "LOW"
+
+
+def _exploration_prompt_section(pack: dict | None) -> str:
+    if not pack or not pack.get("modules"):
+        return ""
+    lines = ["\nLocked exploration pack (already analyzed — reuse, do not re-derive):"]
+    for mod in pack["modules"]:
+        tier = _module_risk_tier(mod)
+        lines.append(
+            f"- module {mod.get('module_id', '?')} risk_tier={tier} "
+            f"members={mod.get('member_paths', [])}"
+        )
+        for rule in mod.get("business_rules", []):
+            lines.append(f"    business_rule: {rule}")
+        notes = mod.get("human_notes")
+        if notes:
+            lines.append(f"    human_notes: {notes}")
+    return "\n".join(lines) + "\n"
 
 
 def _inventory_blob(source_dir: Path, max_cobol_chars: int = 1200) -> str:
@@ -70,12 +126,21 @@ def _inventory_blob(source_dir: Path, max_cobol_chars: int = 1200) -> str:
     return "\n".join(lines) if lines else "(empty)"
 
 
-async def plan_repository(run_id: str, source_dir: Path) -> tuple[MigrationPlan, dict]:
-    """Returns (plan, cost_meta). Always a valid plan — LLM failure uses fallback."""
+async def plan_repository(
+    run_id: str, source_dir: Path, conn: aiosqlite.Connection | None = None,
+) -> tuple[MigrationPlan, dict]:
+    """Returns (plan, cost_meta). Always a valid plan — LLM failure uses fallback.
+    conn is optional (backward compatible) — when given, a LOCKED exploration
+    pack for this run_id enriches the prompt with risk tiers and business
+    rules; when omitted or no locked pack exists, behaves exactly as before."""
     plan_id = str(ULID())
     sln = solution_name_from_source(source_dir)
     cost_meta = {"cost_usd": 0.0, "input_tokens": 0, "output_tokens": 0, "latency_ms": 0, "source": "fallback"}
-    prompt = _PLAN_PROMPT.format(inventory=_inventory_blob(source_dir), sln=sln)
+    pack = await _load_locked_pack(conn, run_id) if conn is not None else None
+    prompt = _PLAN_PROMPT.format(
+        inventory=_inventory_blob(source_dir), sln=sln,
+        exploration_section=_exploration_prompt_section(pack),
+    )
     try:
         payload, cost_meta = await llm.plan_manifest(prompt, source_dir)
         cost_meta["source"] = "claude"

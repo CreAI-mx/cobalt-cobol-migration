@@ -483,7 +483,7 @@ async def ensure_plan(conn: aiosqlite.Connection, run_id: str, events: list) -> 
         phase="Analyzing", skill="migration-planner", status="RUNNING",
         detail="one planner session over a compact inventory",
     ))
-    plan, cost = await plan_repository(run_id, source_dir)
+    plan, cost = await plan_repository(run_id, source_dir, conn)
     await persist_plan(conn, plan)
     await _log_cost(conn, run_id, "Analyzing", cost)
     events.append(PhaseEvent(
