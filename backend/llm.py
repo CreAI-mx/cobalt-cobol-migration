@@ -307,26 +307,35 @@ async def extract_estate_relation_graph(
     claude_bin = find_claude()
     if claude_bin is None:
         raise HeadlessInvocationError("claude CLI not found")
-    prompt = """Read ALL COBOL under the origin source root. Produce ONE flowchart
-of the estate's control flow, as a programmer would sketch pseudocode.
+    inventory = json.dumps(candidates, ensure_ascii=False)[:6000]
+    prompt = """Read the COBOL. Produce ONE relation+sequence GRAPH of how the
+estate hangs together as a business system.
 
-Do NOT slice the diagram by file, script, folder, or PROGRAM-ID box-per-file.
-A monolith that arrives as a single .cbl must still explode: PROCEDURE
-paragraphs, PERFORM, PERFORM UNTIL, IF/ELSE, READ/AT END, CALL, STOP.
-Files exist only as evidence (`file:line`) on nodes.
+FORBIDDEN:
+- A flowchart of the original scripts (no DISPLAY/ACCEPT/OPEN/CLOSE/STOP nodes).
+- One node per COBOL statement.
+- Grouping, coloring, or ranking by file/path/folder.
+- Concatenating programs into one vertical sequence of source order.
 
-CALL/PERFORM to another paragraph or program continues in THIS same graph
-(the callee's steps), never as a second file swimlane.
+REQUIRED:
+- Reconstruct the logical architecture: runtime units, named procedures that
+  matter, data stores, and business decisions that change control.
+- A monolith in one .cbl still explodes into paragraph + data + decision nodes.
+- CALL/PERFORM is an edge to the callee in THIS same graph.
+- Labels = business English ("Lookup account", "Flag AML if over threshold").
+- Color meaning is node kind, never the source file.
+- evidence = file:line only (not a swimlane).
+- At most ~30 nodes. rank = dependency wave (0 = entries). seq = order in wave.
 
-Node kinds: start | process | decision | loop | call | end | merge
-Edge kinds: next | yes | no | loop | exit
-seq = top-to-bottom reading order. label = short pseudocode (verb + condition).
+Kinds: program | paragraph | data | external | decision | start | end
+Edges: call | perform | next | loop | reads | writes | yes | no
 
-Origin root: {source_dir}
+Origin: __SOURCE_DIR__
+Inventory (hints only, verify in source): __INVENTORY__
 
-Return JSON only:
-{{"schema":2,"generated_by":"agent","nodes":[{{"id":"s0","label":"start","kind":"start","seq":0,"evidence":["src/x.cbl:22"]}}],"edges":[{{"source":"s0","target":"s1","kind":"next","label":""}}]}}
-""".format(source_dir=str(source_dir))
+JSON only:
+{"schema":2,"generated_by":"agent","nodes":[{"id":"pgm:LOOKUP","label":"Lookup account","kind":"program","rank":0,"seq":0,"evidence":["src/account_lookup.cbl:22"]}],"edges":[{"source":"pgm:LOOKUP","target":"dat:ACCOUNTS","kind":"reads"}]}
+""".replace("__SOURCE_DIR__", str(source_dir)).replace("__INVENTORY__", inventory)
     t0 = time.monotonic()
     proc = await asyncio.create_subprocess_exec(
         claude_bin, "-p", prompt, "--output-format", "json", "--max-turns", "16",
@@ -809,7 +818,28 @@ export PATH="$HOME/.dotnet:$PATH"
 List this Linux method FIRST, `brew install --cask dotnet-sdk` for macOS,
 `winget install Microsoft.DotNet.SDK.8` for Windows — and note that if `apt`
 was used and `dotnet --version` fails with a libhostfxr error, the fix is to
-run the script above instead (do not try to repair the apt package).
+run the script above instead (do not try to repair the apt package). After
+the install script, add ONE more step: `sudo ln -sf "$HOME/.dotnet/dotnet"
+/usr/local/bin/dotnet` — this makes `dotnet` resolve correctly in every new
+terminal with zero `export`/`.bashrc` editing required (verified: on a
+standard Linux PATH, `/usr/local/bin` is searched before `/usr/bin`, so this
+symlink alone shadows a broken system package permanently). Mention that an
+already-open shell may need `hash -r` to pick up the new symlink.
+
+CRITICAL — verified live 2026-09-16 (real user friction: "queda mal en vivo"
+when a generated CLI reported ACCOUNT NOT FOUND / file-not-found because no
+data existed): if ANY work item's CLI reads a data file (accounts.dat,
+transactions.dat, or similar fixed-width/line-sequential file — check the
+existing tree and any Infrastructure/Persistence source for `File.Exists`,
+`ReadAllLines`, `PIC` layout constants), the README's "Run the CLI" section
+MUST include a real, runnable snippet that creates a minimal valid sample of
+that file BEFORE the run steps — derive the exact field widths from the
+actual persistence code in the tree (e.g. a `python3 -c "..."` one-liner
+writing a fixed-width line matching the real `AccountNumberDigits`/
+`NameLength`/`BalanceDigits` constants). Never leave "you'll need a data
+file" unstated — a reader with zero access to the COBOL source or this
+codebase's persistence internals must be able to test the FOUND/success path
+from this README alone, not just confirm NOT_FOUND on an empty run.
 docs/MIGRATION.md — COBOL→C# decisions, traceability (each handler ← COBOL
 PROGRAM-ID), limitations. English, dense, factual.
 
