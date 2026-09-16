@@ -62,20 +62,22 @@ export default function RunProgress({
         ? 'Pipeline streaming'
         : null
 
-  const chip = waiting ? 'WAITING' : live ? 'RUNNING' : runStatus ?? 'IDLE'
-  const chipClass = waiting || live ? 'running' : runStatus === 'PASSED' ? 'passed' : runStatus ? 'failed' : 'idle'
+  const inFlight = live || runStatus === 'RUNNING' || waiting
+  const chip = waiting ? 'WAITING' : inFlight ? 'RUNNING' : runStatus ?? 'IDLE'
+  const chipClass =
+    inFlight ? 'running' : runStatus === 'PASSED' ? 'passed' : runStatus ? 'failed' : 'idle'
 
   return (
     <div className="run-meter" aria-live="polite">
       <div className="run-meter-top">
         <div className="run-meter-pct">
-          {(live || waiting) && <SpinnerIcon className="run-meter-spin" width={28} height={28} />}
+          {inFlight && <SpinnerIcon className="run-meter-spin" width={28} height={28} />}
           <span className="run-meter-num">{pct}%</span>
         </div>
         <div className="run-meter-copy">
           <div className="run-meter-headline">
             <span className={`verdict ${chipClass}`}>
-              {(live || waiting) && <SpinnerIcon width={12} height={12} />}
+              {inFlight && <SpinnerIcon width={12} height={12} />}
               {chip}
             </span>
             {executionId ? (

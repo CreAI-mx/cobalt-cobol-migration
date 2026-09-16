@@ -84,7 +84,7 @@ export default function PhaseTimeline({ phaseMap, archAction, live = false }: Pr
             }
             role={meta.scrollTargetId ? 'button' : undefined}
             tabIndex={meta.scrollTargetId ? 0 : undefined}
-            title={meta.scrollTargetId ? 'Ir al sandbox COBOL vs C# (Parity)' : undefined}
+            title={meta.scrollTargetId ? 'Jump to COBOL vs C# parity sandbox' : undefined}
           >
             <span className={iconClass}>{icon}</span>
             <div className="timeline-body">

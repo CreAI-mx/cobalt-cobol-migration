@@ -97,11 +97,11 @@ export default function AgentStackSurface({ runId, disabled, allowAgentRerun }: 
   const parityOn = tools['parity-oracle']
   const saveLabel =
     saveState === 'saving'
-      ? 'Guardando…'
+      ? 'Saving…'
       : saveState === 'saved'
-        ? 'Sincronizado'
+        ? 'Synced'
         : saveState === 'error'
-          ? 'Error al guardar'
+          ? 'Save failed'
           : ''
 
   return (
@@ -112,7 +112,7 @@ export default function AgentStackSurface({ runId, disabled, allowAgentRerun }: 
             Agent stack
           </h3>
           <p className="pane-sub">
-            Sesión agentica en vivo (SSE) + circumstance persistido + rerun que re-inyecta el brief en conversión.
+            Live agent session (SSE) + persisted circumstance + rerun re-injects the brief into conversion.
           </p>
         </div>
         <div className="agent-stack-head-meta">
@@ -124,7 +124,7 @@ export default function AgentStackSurface({ runId, disabled, allowAgentRerun }: 
               disabled={disabled || live || rerunBusy}
               onClick={onAgentRerun}
             >
-              {rerunBusy || live ? 'Agentes corriendo…' : 'Re-ejecutar agentes'}
+              {rerunBusy || live ? 'Agents running…' : 'Re-run agents'}
             </button>
           )}
           <a className="btn btn-sm" href="/docs" target="_blank" rel="noreferrer">
@@ -190,7 +190,7 @@ export default function AgentStackSurface({ runId, disabled, allowAgentRerun }: 
           <ParityConsole runId={runId} disabled={disabled || live} />
         </div>
       ) : (
-        <p className="muted agent-stack-slot-off">Parity oracles desactivados.</p>
+        <p className="muted agent-stack-slot-off">Parity oracles disabled.</p>
       )}
     </section>
   )

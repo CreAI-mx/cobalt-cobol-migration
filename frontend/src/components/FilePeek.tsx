@@ -59,7 +59,7 @@ export default function FilePeek({ path, mode, mappings = [], generated = false,
         !runId
           ? mode === 'source'
             ? 'No intake yet — nothing to open.'
-            : 'Sin run id — no se puede cargar el archivo generado.'
+            : 'No run id — cannot load generated file.'
           : null,
       )
       return
@@ -147,8 +147,8 @@ export default function FilePeek({ path, mode, mappings = [], generated = false,
               {generated && (
                 <>
                   {' '}
-                  El árbol marca el archivo como generado; si la integración a{' '}
-                  <code>csharp/</code> falló, revisa Activity o vuelve a migrar.
+                  Tree marks this file as generated; if integration to{' '}
+                  <code>csharp/</code> failed, check Activity or re-run migration.
                 </>
               )}
             </p>
@@ -157,7 +157,7 @@ export default function FilePeek({ path, mode, mappings = [], generated = false,
             !error &&
             (mode === 'source' || generated) &&
             !source && (
-              <p className="muted">No se pudo cargar el contenido del archivo.</p>
+              <p className="muted">Could not load file content.</p>
             )}
           {(mode === 'source' || generated) && source?.binary && (
             <p className="muted">Binary file — not shown.</p>

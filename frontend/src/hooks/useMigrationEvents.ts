@@ -457,39 +457,54 @@ export function useMigrationEvents(): RunState {
     }
   }, [runId])
 
+  /** Poll persisted run state so ABORTED→RUNNING retries (or another tab's /start)
+   * update the meter without a full page refresh. Reconnect SSE when backend live. */
   useEffect(() => {
-    if (!live) return;
-    const id = intakeRef.current?.run_id;
-    if (!id) return;
+    if (!runId) return;
     let cancelled = false;
     const tick = async () => {
       try {
         const [rows, arch, detail, manifesto] = await Promise.all([
-          getCost(id),
-          getArchitecture(id),
-          getRunDetail(id),
-          getPlan(id).catch(() => null),
+          getCost(runId),
+          getArchitecture(runId),
+          getRunDetail(runId),
+          getPlan(runId).catch(() => null),
         ]);
         if (cancelled) return;
         setCost(rows);
         if (manifesto) setPlan(manifesto);
         if (arch) {
           setArchitecture((prev) => {
-            if (arch.revision > prev.revision) return arch
-            if (arch.revision >= prev.revision && arch.action !== prev.action) return arch
-            return prev
-          })
+            if (arch.revision > prev.revision) return arch;
+            if (arch.revision >= prev.revision && arch.action !== prev.action) return arch;
+            return prev;
+          });
         }
         if (detail.status) setRunStatus(detail.status);
-        if (detail.started_at) setStartedAt(detail.started_at)
-        setFinishedAt(detail.finished_at ?? null)
+        if (detail.started_at) setStartedAt(detail.started_at);
+        setFinishedAt(detail.finished_at ?? null);
+
+        if (detail.live) {
+          setLive(true);
+          startedRef.current = true;
+          if (!esRef.current) subscribe(runId);
+        } else if (esRef.current) {
+          closeStream();
+          setLive(false);
+        } else {
+          setLive(false);
+        }
+
         const incoming = Array.isArray(detail.events) ? detail.events : [];
         if (incoming.length === 0) return;
         setEvents((prev) => {
           const merged: MigrationEvent[] = [];
           const seen = new Set<string>();
           const ingest = (raw: MigrationEvent) => {
-            const ev = raw.type === 'file' || raw.type === 'phase' ? raw : normalizeEvent(raw as unknown as Record<string, unknown>);
+            const ev =
+              raw.type === 'file' || raw.type === 'phase'
+                ? raw
+                : normalizeEvent(raw as unknown as Record<string, unknown>);
             const key = eventKey(ev);
             if (seen.has(key)) return;
             seen.add(key);
@@ -498,22 +513,25 @@ export function useMigrationEvents(): RunState {
           for (const e of incoming) ingest(e);
           for (const e of prev) ingest(e);
           seenRef.current = seen;
-          if (merged.length === prev.length && merged.every((e, i) => eventKey(e) === eventKey(prev[i]))) {
+          if (
+            merged.length === prev.length &&
+            merged.every((e, i) => eventKey(e) === eventKey(prev[i]))
+          ) {
             return prev;
           }
           return merged;
         });
       } catch {
-        /* cost/architecture/detail are best-effort while SSE is live */
+        /* best-effort sync */
       }
     };
     void tick();
-    const handle = window.setInterval(() => void tick(), 2000);
+    const handle = window.setInterval(() => void tick(), 3000);
     return () => {
       cancelled = true;
       window.clearInterval(handle);
     };
-  }, [live]);
+  }, [runId, subscribe, closeStream]);
 
   // Memoized: at demo scale the rebuild is negligible, but events are unbounded
   // on real estates (1000+ files) and every SSE message re-renders consumers.

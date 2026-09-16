@@ -61,6 +61,30 @@ function parseBalanceValue(raw: string | null): number | null {
 }
 
 /** Client-side comparison when API omits comparison (single-side runs). */
+
+/** Human-readable console excerpt for side-by-side compare UI. */
+export function formatOutputPreview(stdout: string, tx: ParityTranscript): string {
+  if (tx.outcome === 'found') {
+    const lines = ['ACCOUNT FOUND:']
+    if (tx.name) lines.push(`NAME: ${tx.name}`)
+    if (tx.balance) lines.push(`BALANCE: ${tx.balance}`)
+    return lines.join('\n')
+  }
+  if (tx.outcome === 'not_found') return 'ACCOUNT NOT FOUND.'
+  const tail = stdout
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l && !l.startsWith('#'))
+    .slice(-6)
+  return tail.length > 0 ? tail.join('\n') : '(no parseable output)'
+}
+
+export function comparisonSimilarityPct(comparison: ParityComparison): number {
+  if (comparison.diffs.length === 0) return 0
+  const ok = comparison.diffs.filter((d) => d.equal).length
+  return Math.round((ok / comparison.diffs.length) * 100)
+}
+
 export function compareParityTranscripts(cobol: ParityTranscript, csharp: ParityTranscript): ParityComparison | null {
   if (!cobol.outcome || !csharp.outcome) return null
 
@@ -75,13 +99,13 @@ export function compareParityTranscripts(cobol: ParityTranscript, csharp: Parity
   const diffs: ParityFieldDiff[] = [
     {
       field: 'outcome',
-      label: 'Resultado',
+      label: 'Outcome',
       equal: outcomeEq,
       cobol: outcomeLabel(cobol) ?? '—',
       csharp: outcomeLabel(csharp) ?? '—',
       fix_hint: outcomeEq
         ? null
-        : 'Corregir lógica de búsqueda en Handler/CLI C# vs COBOL READ/PERFORM.',
+        : 'Fix lookup logic de búsqueda en Handler/CLI C# vs COBOL READ/PERFORM.',
     },
     {
       field: 'name',
@@ -89,7 +113,7 @@ export function compareParityTranscripts(cobol: ParityTranscript, csharp: Parity
       equal: nameEq,
       cobol: cobol.name ?? '—',
       csharp: csharp.name ?? '—',
-      fix_hint: nameEq ? null : 'Revisar ancho de nombre (30) y Trim en lectura de accounts.dat.',
+      fix_hint: nameEq ? null : 'Check name width (30) y Trim en lectura de accounts.dat.',
     },
     {
       field: 'balance',
@@ -102,8 +126,8 @@ export function compareParityTranscripts(cobol: ParityTranscript, csharp: Parity
       fix_hint: balanceEq
         ? null
         : !balanceValueEq && cbVal !== null && csVal !== null
-          ? `Valor numérico distinto (~${cbVal} vs ~${csVal}). Revisar PIC y parseo decimal.`
-          : 'Formatear BALANCE en Program.cs como DISPLAY COBOL (+0000010.00).',
+          ? `Numeric value differs (~${cbVal} vs ~${csVal}). Revisar PIC y parseo decimal.`
+          : 'Format BALANCE in Program.cs to match COBOL DISPLAY (+0000010.00).',
     },
   ]
 

@@ -3324,6 +3324,113 @@ button.brand-lockup:focus-visible {
   letter-spacing: 0;
 }
 
+
+.parity-compare-visual {
+  display: grid;
+  grid-template-columns: 1fr 1fr minmax(120px, 160px);
+  gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+@media (max-width: 900px) {
+  .parity-compare-visual {
+    grid-template-columns: 1fr;
+  }
+}
+
+.parity-compare-col-label {
+  display: block;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted-fg);
+  margin-bottom: 6px;
+}
+
+.parity-compare-output {
+  margin: 0;
+  padding: 10px 12px;
+  min-height: 72px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.parity-compare-col-cobol .parity-compare-output {
+  border-left: 3px solid #64748b;
+}
+
+.parity-compare-col-csharp .parity-compare-output {
+  border-left: 3px solid var(--accent);
+}
+
+.parity-similarity-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 12px 10px;
+  border-radius: 10px;
+  background: #f8fafc;
+  border: 1px solid var(--border);
+  text-align: center;
+}
+
+.parity-similarity-pct {
+  font-size: 28px;
+  font-weight: 800;
+  line-height: 1;
+  color: var(--fg);
+}
+
+.parity-similarity-caption {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted-fg);
+}
+
+.parity-similarity-bar {
+  width: 100%;
+  height: 6px;
+  border-radius: 999px;
+  background: #e2e8f0;
+  overflow: hidden;
+  margin: 4px 0 2px;
+}
+
+.parity-similarity-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--ok);
+  transition: width 0.25s ease;
+}
+
+.parity-diff-mismatch .parity-similarity-fill {
+  background: var(--warning);
+}
+
+.parity-similarity-verdict {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+}
+
+.parity-similarity-verdict.ok {
+  color: var(--ok);
+}
+
+.parity-similarity-verdict.fail {
+  color: var(--destructive);
+}
+
 .parity-diff-panel {
   margin-bottom: 12px;
   border: 1px solid var(--border);
@@ -3776,6 +3883,35 @@ button.brand-lockup:focus-visible {
 .agent-session-detail {
   color: #334155;
   word-break: break-word;
+}
+
+
+.agent-session-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 6px 12px 10px;
+  border-top: 1px solid var(--border);
+}
+
+.agent-session-toggle {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: var(--font-ui);
+}
+
+.agent-session-toggle:hover {
+  text-decoration: underline;
+}
+
+.agent-session-foot-hint {
+  font-size: 11px;
 }
 
 .agent-session-empty {

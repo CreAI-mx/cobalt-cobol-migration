@@ -21,7 +21,7 @@ export const PHASES: PhaseMeta[] = [
     id: 'Parity Validation',
     skill: 'parity-validation',
     label: 'Compare',
-    railTitle: 'Comparativa · Original vs migrado',
+    railTitle: 'Compare · Original vs migrated',
     scrollTargetId: 'parity-console-title',
     agentic: false,
     runningLabel: 'COBOL oracle vs C# migrado (mismo fixture)…',

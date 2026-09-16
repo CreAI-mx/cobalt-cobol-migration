@@ -93,10 +93,10 @@ function FeedLogDetail({
         }}
       >
         {expanded
-          ? 'Compactar log'
+          ? 'Collapse log'
           : lines.length > LOG_PREVIEW_LINES
-            ? `Ver log completo (${lines.length} líneas)`
-            : 'Ver log completo'}
+            ? `Show full log (${lines.length} lines)`
+            : 'Show full log'}
       </button>
     </div>
   )

@@ -7,7 +7,12 @@ import {
   type ParityDemoSide,
   type ParityTerminalPane,
 } from '../lib/api'
-import { compareParityTranscripts, parseParityTranscript } from '../lib/parityTranscript'
+import {
+  compareParityTranscripts,
+  comparisonSimilarityPct,
+  formatOutputPreview,
+  parseParityTranscript,
+} from '../lib/parityTranscript'
 
 interface Props {
   runId: string
@@ -83,34 +88,63 @@ function TermSandbox({
   )
 }
 
-function ParityDiffPanel({ comparison }: { comparison: ParityComparison }) {
+function ParityDiffPanel({
+  comparison,
+  cobolStdout,
+  csharpStdout,
+  cobTx,
+  csTx,
+}: {
+  comparison: ParityComparison
+  cobolStdout: string
+  csharpStdout: string
+  cobTx: ReturnType<typeof parseParityTranscript>
+  csTx: ReturnType<typeof parseParityTranscript>
+}) {
   const equal = comparison.output_equal
   const mismatches = comparison.diffs.filter((d) => !d.equal)
+  const similarity = comparisonSimilarityPct(comparison)
+  const cobPreview = formatOutputPreview(cobolStdout, cobTx)
+  const csPreview = formatOutputPreview(csharpStdout, csTx)
 
   return (
     <div
       className={`parity-diff-panel ${equal ? 'parity-diff-equal' : 'parity-diff-mismatch'}`}
       role="region"
-      aria-label="Comparación de salida COBOL vs C#"
+      aria-label="COBOL vs C# output comparison"
     >
-      <div className="parity-output-banner">
-        <span className="parity-output-banner-label">¿Output igual?</span>
-        <strong className="parity-output-banner-verdict">
-          {equal ? 'SÍ — paridad OK' : 'NO — hay diferencias'}
-        </strong>
-        {!comparison.display_equal && equal && (
-          <span className="parity-output-banner-sub muted">
-            (Mismo negocio; texto de BALANCE en consola aún distinto)
-          </span>
-        )}
+      <div className="parity-compare-visual">
+        <div className="parity-compare-col parity-compare-col-cobol">
+          <span className="parity-compare-col-label">Legacy COBOL output</span>
+          <pre className="parity-compare-output mono">{cobPreview}</pre>
+        </div>
+        <div className="parity-compare-col parity-compare-col-csharp">
+          <span className="parity-compare-col-label">Migrated C# output</span>
+          <pre className="parity-compare-output mono">{csPreview}</pre>
+        </div>
+        <div className="parity-similarity-card" aria-label={`Similarity ${similarity} percent`}>
+          <span className="parity-similarity-pct">{similarity}%</span>
+          <span className="parity-similarity-caption">field match</span>
+          <div className="parity-similarity-bar" role="presentation">
+            <span className="parity-similarity-fill" style={{ width: `${similarity}%` }} />
+          </div>
+          <strong className={`parity-similarity-verdict ${equal ? 'ok' : 'fail'}`}>
+            {equal ? 'MATCH' : 'MISMATCH'}
+          </strong>
+        </div>
       </div>
+
+      {!comparison.display_equal && equal && (
+        <p className="parity-output-banner-sub muted">
+          Same business result; BALANCE display text may still differ on the console.
+        </p>
+      )}
 
       {!equal && mismatches.length > 0 && (
         <ul className="parity-fix-list">
           {mismatches.map((d) => (
             <li key={d.field}>
-              <strong>{d.label}:</strong>{' '}
-              {d.fix_hint ?? 'Revisar el transcript en las terminales.'}
+              <strong>{d.label}:</strong> {d.fix_hint ?? 'See terminal transcripts above.'}
             </li>
           ))}
         </ul>
@@ -119,10 +153,10 @@ function ParityDiffPanel({ comparison }: { comparison: ParityComparison }) {
       <table className="parity-compare-table mono">
         <thead>
           <tr>
-            <th scope="col">Campo</th>
+            <th scope="col">Field</th>
             <th scope="col">COBOL</th>
             <th scope="col">C#</th>
-            <th scope="col">¿Igual?</th>
+            <th scope="col">Match</th>
           </tr>
         </thead>
         <tbody>
@@ -132,7 +166,7 @@ function ParityDiffPanel({ comparison }: { comparison: ParityComparison }) {
               <td>{row.cobol}</td>
               <td>{row.csharp}</td>
               <td className={row.equal ? 'parity-cell-ok' : 'parity-cell-fail'}>
-                {row.equal ? '✓' : '✗'}
+                {row.equal ? 'Yes' : 'No'}
               </td>
             </tr>
           ))}
@@ -186,16 +220,16 @@ export default function ParityConsole({ runId, disabled }: Props) {
       setSummary(null)
       setStatusHint(
         res.cobol.ok
-          ? 'COBOL listo — ejecuta C# o Compare both para ver si el output es igual.'
-          : 'COBOL falló — corrige compile/runtime antes de comparar.',
+          ? 'COBOL finished — run C# or Compare both to check output parity.'
+          : 'COBOL failed — fix compile/runtime before comparing.',
       )
     } else {
       setVerdict(null)
       setSummary(null)
       setStatusHint(
         res.csharp.ok
-          ? 'C# listo — ejecuta COBOL o Compare both para ver diferencias.'
-          : 'C# falló — revisa dotnet run.',
+          ? 'C# finished — run COBOL or Compare both to compare.'
+          : 'C# failed — check dotnet run output.',
       )
     }
   }, [])
@@ -219,8 +253,7 @@ export default function ParityConsole({ runId, disabled }: Props) {
             Parity sandbox
           </h3>
           <p className="pane-sub">
-            Compara salida COBOL vs <code>*Cli</code> — mismo <code>accounts.dat</code> y stdin. Arriba verás
-            si el output es igual y <strong>qué corregir en código</strong>.
+            Compare COBOL vs <code>*Cli</code> — same <code>accounts.dat</code> y stdin. Terminals above; <strong>comparison summary below</strong> shows each output and match score.
           </p>
         </div>
         <div className="parity-console-head-meta">
@@ -232,7 +265,7 @@ export default function ParityConsole({ runId, disabled }: Props) {
             disabled={disabled || busy}
             onClick={() => run('both')}
           >
-            {loadingSide === 'both' ? 'Comparando…' : 'Compare both'}
+            {loadingSide === 'both' ? 'Comparing…' : 'Compare both'}
           </button>
         </div>
       </header>
@@ -242,8 +275,6 @@ export default function ParityConsole({ runId, disabled }: Props) {
           {error}
         </p>
       )}
-
-      {comparison && <ParityDiffPanel comparison={comparison} />}
 
       {verdict && summary && (
         <p className={`parity-verdict parity-verdict-${verdict}`} role="status">
@@ -275,10 +306,20 @@ export default function ParityConsole({ runId, disabled }: Props) {
         />
       </div>
 
+      {comparison && (
+        <ParityDiffPanel
+          comparison={comparison}
+          cobolStdout={cobol.stdout}
+          csharpStdout={csharp.stdout}
+          cobTx={cobTx}
+          csTx={csTx}
+        />
+      )}
+
       <footer className="parity-console-foot">
         <p className="muted parity-foot-hint">
-          Usa <strong>Compare both</strong> para veredicto + tabla. Arregla en <code>*Cli/Program.cs</code>,
-          handlers o lectura de <code>accounts.dat</code>.
+          Use <strong>Compare both</strong> for verdict + table. Fix in <code>*Cli/Program.cs</code>,
+          handlers or <code>accounts.dat</code>.
         </p>
       </footer>
     </section>

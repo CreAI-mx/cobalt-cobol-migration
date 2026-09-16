@@ -76,6 +76,7 @@ export default function Step5Migrate() {
       ? deriveTargetArchitecture(intake.tree, shape, architecture.directive, nameByFrom)
       : TARGET_ARCHITECTURE
   const mapping = intake ? deriveMapping(intake.tree, shape, nameByFrom).mappings : []
+  const runLive = live || runStatus === 'RUNNING'
   const buildTags = useMemo(
     () =>
       usePlanTree
@@ -85,21 +86,21 @@ export default function Step5Migrate() {
             workItems: plan?.work_items,
             planStage: plan?.stage,
             finishedAt,
-            live,
+            live: runLive,
           })
         : deriveEstateStatus(events, mapping, proposedTree, phaseMap),
-    [usePlanTree, planExpectedPaths, events, mapping, proposedTree, phaseMap, runStatus, plan?.work_items, plan?.stage, finishedAt, live],
+    [usePlanTree, planExpectedPaths, events, mapping, proposedTree, phaseMap, runStatus, plan?.work_items, plan?.stage, finishedAt, live, runStatus, runLive],
   )
   const progress = estateProgress(countTags(buildTags))
   const waiting = live && phaseIsWaiting(phaseMap, 'Phase 4', architecture.action)
-  const currentFiles = live ? inProgressPaths(buildTags) : []
-  const focusPath = live ? latestBuildPath(events, buildTags) : null
+  const currentFiles = runLive ? inProgressPaths(buildTags) : []
+  const focusPath = runLive ? latestBuildPath(events, buildTags) : null
   const executionIdRaw = runId ?? intake?.run_id ?? architecture.run_id
   const executionId = executionIdRaw?.trim() ? executionIdRaw.trim() : null
   const showArtifactDownload = Boolean(executionId && !live && progress.finished > 0)
 
   let currentPhase: string | null = null
-  if (live) {
+  if (runLive) {
     for (let i = events.length - 1; i >= 0; i--) {
       if (events[i].type === 'phase' && events[i].phase !== '__done__') {
         currentPhase = events[i].phase
@@ -113,7 +114,7 @@ export default function Step5Migrate() {
       <RunProgress
         progress={progress}
         phaseMap={phaseMap}
-        live={live}
+        live={runLive}
         waiting={waiting}
         runStatus={runStatus}
         currentFiles={currentFiles}
@@ -133,7 +134,7 @@ export default function Step5Migrate() {
       <div className="migrate-layout">
         <aside className="pane phase-rail">
           <h3 className="pane-title">Phases</h3>
-          <PhaseTimeline phaseMap={phaseMap} archAction={architecture.action} live={live} />
+          <PhaseTimeline phaseMap={phaseMap} archAction={architecture.action} live={runLive} />
         </aside>
 
         <section className="pane estate-pane">
@@ -175,7 +176,7 @@ export default function Step5Migrate() {
               </a>
             )}
           </div>
-          <ActivityFeed events={events} currentPhase={currentPhase} cost={cost} live={live} />
+          <ActivityFeed events={events} currentPhase={currentPhase} cost={cost} live={runLive} />
         </section>
       </div>
 
