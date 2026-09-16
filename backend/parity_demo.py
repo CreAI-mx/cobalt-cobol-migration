@@ -6,14 +6,19 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from cobol_compilers import build_fixed_width_record, find_tool, run_subprocess
+from cobol_compilers import (
+    build_fixed_width_record,
+    dotnet_subprocess_env,
+    find_dotnet,
+    find_tool,
+    run_subprocess,
+)
 from cobol_compilers import cobc_subprocess_env as _cobc_subprocess_env
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RUNS_DIR = REPO_ROOT / "migration-state" / "runs"
 PARITY_ENGINE = "cli-oracle-v6"
 _COBC_FALLBACKS = ["/home/frg/anaconda3/envs/cobol-tools/bin/cobc"]
-_DOTNET_FALLBACKS = ["/home/frg/.claude3_profile/.dotnet/dotnet"]
 
 
 def _find_tool(name: str, fallbacks: list[str]) -> str | None:
@@ -180,7 +185,13 @@ def _run_csharp_cli_oracle(
         work = Path(tmp)
         (work / "accounts.dat").write_text(accounts_body, encoding="ascii")
         cmd, shown = _dotnet_run_cli_invocation(dotnet, cli)
-        run_res = _run(cmd, cwd=work, input_text=f"{acct}\n", timeout=180)
+        run_res = _run(
+            cmd,
+            cwd=work,
+            input_text=f"{acct}\n",
+            timeout=180,
+            env=dotnet_subprocess_env(dotnet),
+        )
         lines.append(f"$ echo '{acct}' | {shown}")
         lines.append(run_res["stdout"].rstrip())
         return {
@@ -204,7 +215,7 @@ def _test_sources_in_project(test_csproj: Path) -> list[Path]:
 
 def _dotnet_build_gate(dotnet: str, csproj: Path, timeout: int = 180) -> dict:
     cmd = [dotnet, "build", str(csproj), "--verbosity", "minimal", "--nologo"]
-    res = _run(cmd, cwd=csproj.parent, timeout=timeout)
+    res = _run(cmd, cwd=csproj.parent, timeout=timeout, env=dotnet_subprocess_env(dotnet))
     out = res["stdout"]
     ok = res["ok"] and "Build succeeded" in out and "0 Error(s)" in out
     note = (
@@ -237,7 +248,7 @@ def _run_csharp_fallback(csharp: Path, dotnet: str) -> dict:
         return {**_dotnet_build_gate(dotnet, test_csproj), "title": title}
 
     cmd = [dotnet, "test", str(test_csproj), "--verbosity", "normal", "--nologo"]
-    res = _run(cmd, cwd=csharp, timeout=180)
+    res = _run(cmd, cwd=csharp, timeout=180, env=dotnet_subprocess_env(dotnet))
     out = res["stdout"]
     if res["ok"] and ("No test is available" in out or "Total tests: 0" in out):
         return {**_dotnet_build_gate(dotnet, test_csproj), "title": title}
@@ -250,7 +261,7 @@ def _run_csharp_side(
     acct: str,
     accounts_body: str,
 ) -> dict:
-    dotnet = _find_tool("dotnet", _DOTNET_FALLBACKS)
+    dotnet = find_dotnet()
     if not dotnet:
         return {
             "title": "C# — CLI oracle",

@@ -18,6 +18,7 @@ from pathlib import Path
 import aiosqlite
 from ulid import ULID
 
+import cobol_compilers
 import llm
 import agent_stack
 import parity_gate
@@ -39,9 +40,6 @@ from work_items import (
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RUNS_DIR = REPO_ROOT / "migration-state" / "runs"
-_DOTNET_FALLBACKS = ["/home/frg/.claude3_profile/.dotnet/dotnet"]
-
-
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -49,16 +47,6 @@ def _now() -> str:
 def _run_dirs(run_id: str) -> tuple[Path, Path, Path]:
     root = RUNS_DIR / run_id
     return root / "source", root / "csharp", root / "workspaces"
-
-
-def _find_dotnet() -> str | None:
-    found = shutil.which("dotnet")
-    if found:
-        return found
-    for p in _DOTNET_FALLBACKS:
-        if os.path.isfile(p) and os.access(p, os.X_OK):
-            return p
-    return None
 
 
 async def persist_plan(conn: aiosqlite.Connection, plan: MigrationPlan) -> None:
@@ -354,11 +342,12 @@ async def _log_cost(conn: aiosqlite.Connection, run_id: str, phase: str, meta: d
 
 
 async def _dotnet(cmd: list[str], cwd: Path, timeout: int = 120) -> tuple[bool, str]:
-    bin_ = _find_dotnet()
+    bin_ = cobol_compilers.find_dotnet()
     if not bin_:
         return False, "dotnet not found"
+    env = cobol_compilers.dotnet_subprocess_env(bin_)
     proc = await asyncio.create_subprocess_exec(
-        bin_, *cmd, cwd=str(cwd),
+        bin_, *cmd, cwd=str(cwd), env=env,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
     )
     try:

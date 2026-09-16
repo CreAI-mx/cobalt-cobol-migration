@@ -26,12 +26,51 @@ def find_tool(name: str, fallbacks: list[str]) -> str | None:
     return None
 
 
-def find_cobc() -> str | None:
-    return find_tool("cobc", _COBC_FALLBACKS)
+def dotnet_root_for(dotnet_bin: str) -> str:
+    return str(Path(dotnet_bin).resolve().parent)
+
+
+def dotnet_subprocess_env(dotnet_bin: str) -> dict[str, str]:
+    env = os.environ.copy()
+    root = dotnet_root_for(dotnet_bin)
+    env["DOTNET_ROOT"] = root
+    env["PATH"] = f"{root}{os.pathsep}{env.get('PATH', '')}"
+    return env
+
+
+def _dotnet_usable(dotnet_bin: str) -> bool:
+    env = dotnet_subprocess_env(dotnet_bin)
+    try:
+        proc = subprocess.run(
+            [dotnet_bin, "--version"],
+            capture_output=True,
+            timeout=20,
+            check=False,
+            env=env,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if proc.returncode != 0:
+        return False
+    err = (proc.stderr or b"").decode(errors="replace").lower()
+    return "hostfxr" not in err and "does not exist" not in err
 
 
 def find_dotnet() -> str | None:
-    return find_tool("dotnet", _DOTNET_FALLBACKS)
+    candidates: list[str] = []
+    for path in (shutil.which("dotnet"), *_DOTNET_FALLBACKS):
+        if not path or path in candidates:
+            continue
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            candidates.append(path)
+    for c in candidates:
+        if _dotnet_usable(c):
+            return c
+    return None
+
+
+def find_cobc() -> str | None:
+    return find_tool("cobc", _COBC_FALLBACKS)
 
 
 def cobc_subprocess_env(cobc: str) -> dict[str, str]:

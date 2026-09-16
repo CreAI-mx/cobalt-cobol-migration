@@ -57,23 +57,27 @@ npm run build   # backend serves frontend/dist in production
 Then `POST /migration/intake` (multipart `.zip` or `repo_url`), followed by
 `POST /migration/{run_id}/start` to run the pipeline end-to-end.
 
-### Building a generated solution manually
+### Building a generated solution manually (same dotnet as the backend)
 
-If you want to `dotnet build`/`dotnet run` a migrated solution yourself
-(`migration-state/runs/{run_id}/csharp/`) and your system's own `dotnet`
-isn't installed or is missing `libhostfxr.so`, point `DOTNET_ROOT` at
-whichever real .NET 8 SDK install the backend itself uses
-(`cobol_compilers.find_dotnet()` — check `_DOTNET_FALLBACKS` for the exact
-path on this machine) before running any `dotnet` command:
+From the **repo root**, load the SDK the parity sandbox uses (skips a broken
+`/usr/bin/dotnet` when apt only installed `dotnet-host-*`):
 
 ```bash
-export DOTNET_ROOT="<path from find_dotnet()>"
-export PATH="$DOTNET_ROOT:$PATH"
+source scripts/dotnet-env.sh
+export PATH="$(pwd)/bin:$PATH"   # optional: same wrapper as below
+```
+
+With [direnv](https://direnv.net/), run `direnv allow` once — `.envrc` sources
+that script when you `cd` into the repo.
+
+```bash
 cd migration-state/runs/{run_id}/csharp
 dotnet build src/Cli/Cli.csproj
 dotnet test tests/Application.Tests/Application.Tests.csproj
-dotnet run --project src/Cli/Cli.csproj -- account-lookup   # one command per line — do not paste multiple dotnet run lines together, stdin routing between them is undefined
+echo 1000000001 | dotnet run --project src/Cli/Cli.csproj --no-launch-profile -v q -- account-lookup
 ```
+
+Or without sourcing: `/path/to/cobol/bin/dotnet build src/Cli/Cli.csproj`
 
 ## Tests
 

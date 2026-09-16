@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+source "$ROOT/scripts/dotnet-env.sh" || exit 127
+exec "$COBALT_DOTNET" "$@"
