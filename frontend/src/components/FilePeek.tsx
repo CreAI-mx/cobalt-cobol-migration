@@ -55,7 +55,13 @@ export default function FilePeek({ path, mode, mappings = [], generated = false,
     const wantsRealFile = mode === 'source' || generated
     if (!wantsRealFile || !runId) {
       setLoading(false)
-      setError(mode === 'source' && !runId ? 'No intake yet — nothing to open.' : null)
+      setError(
+        !runId
+          ? mode === 'source'
+            ? 'No intake yet — nothing to open.'
+            : 'Sin run id — no se puede cargar el archivo generado.'
+          : null,
+      )
       return
     }
     let cancelled = false
@@ -135,7 +141,24 @@ export default function FilePeek({ path, mode, mappings = [], generated = false,
               {generated ? 'Reading generated file…' : 'Reading source…'}
             </p>
           )}
-          {error && <p className="file-peek-error">{error}</p>}
+          {error && (
+            <p className="file-peek-error" role="alert">
+              {error}
+              {generated && (
+                <>
+                  {' '}
+                  El árbol marca el archivo como generado; si la integración a{' '}
+                  <code>csharp/</code> falló, revisa Activity o vuelve a migrar.
+                </>
+              )}
+            </p>
+          )}
+          {!loading &&
+            !error &&
+            (mode === 'source' || generated) &&
+            !source && (
+              <p className="muted">No se pudo cargar el contenido del archivo.</p>
+            )}
           {(mode === 'source' || generated) && source?.binary && (
             <p className="muted">Binary file — not shown.</p>
           )}

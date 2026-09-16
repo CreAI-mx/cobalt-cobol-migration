@@ -319,6 +319,21 @@ def _generated_path_candidates(path: str) -> list[str]:
     return out
 
 
+def _generated_search_bases(run_id: str) -> list[Path]:
+    """Integrated csharp/ first, then each worker workspace out/ (pre-integrate)."""
+    run_root = RUNS_DIR / run_id
+    bases: list[Path] = [run_root / "csharp"]
+    ws_root = run_root / "workspaces"
+    if ws_root.is_dir():
+        for item in sorted(ws_root.iterdir()):
+            if not item.is_dir():
+                continue
+            out = item / "out"
+            if out.is_dir():
+                bases.append(out)
+    return bases
+
+
 def _read_file_under(base_dir: Path, run_id: str, path: str, not_found_hint: str) -> SourceFileView:
     """Shared path-traversal-safe read for both the source tree and the
     generated C# output — same guard, different root."""
@@ -369,15 +384,15 @@ async def get_generated_file(run_id: str, path: str):
     disk. Distinct from get_source_file: without this, clicking a 'done' node
     in the After tree had nothing real to show (only the pre-generation
     proposal brief), even though the file genuinely exists on disk by then."""
-    base = RUNS_DIR / run_id / "csharp"
     last_err: HTTPException | None = None
-    for candidate in _generated_path_candidates(path):
-        try:
-            return _read_file_under(base, run_id, candidate, "No generated output found")
-        except HTTPException as exc:
-            if exc.status_code != 404:
-                raise
-            last_err = exc
+    for base in _generated_search_bases(run_id):
+        for candidate in _generated_path_candidates(path):
+            try:
+                return _read_file_under(base, run_id, candidate, "No generated output found")
+            except HTTPException as exc:
+                if exc.status_code != 404:
+                    raise
+                last_err = exc
     if last_err:
         raise last_err
     raise HTTPException(404, f"No generated output found for run_id={run_id}")

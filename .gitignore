@@ -24,7 +24,15 @@ migration-state/migration.db-shm
 .vscode/
 .agents/
 .kilo/
+.ruff_cache/
 skills-lock.json
+
+# Non-Cobalt reference material kept locally, never published
+_bodega/
+
+# Runtime lock / dangling symlink to an unrelated personal skill dir
+.claude/scheduled_tasks.lock
+.claude/skills/aws-strands
 
 # OS
 .DS_Store

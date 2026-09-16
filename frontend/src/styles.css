@@ -2913,6 +2913,8 @@ button.brand-lockup:focus-visible {
 }
 
 .file-peek-body {
+  flex: 1 1 auto;
+  min-height: 120px;
   padding: 14px 18px 18px;
   overflow: auto;
 }
