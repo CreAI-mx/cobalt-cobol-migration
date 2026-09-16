@@ -174,6 +174,7 @@ async def _set_stage(conn: aiosqlite.Connection, plan: MigrationPlan, stage: str
 _NAMESPACE_RE = re.compile(r"^\s*namespace\s+([\w.]+)", re.MULTILINE)
 _TYPE_DECL_RE = re.compile(r"^\s*(?:public|internal)?\s*(?:sealed\s+|abstract\s+)?(?:class|record|struct)\s+(\w+)", re.MULTILINE)
 _USING_RE = re.compile(r"^\s*using\s+([\w.]+)\s*;", re.MULTILINE)
+_USING_ALIAS_RE = re.compile(r"^\s*using\s+(\w+)\s*=\s*([\w.]+)\s*;", re.MULTILINE)
 
 
 def _strip_comments_and_strings(text: str) -> str:
@@ -220,23 +221,34 @@ def detect_type_name_collisions(csharp: Path) -> str:
     problems: list[str] = []
     for path, (namespace, _types, text) in per_file.items():
         usings = set(_USING_RE.findall(text)) | {namespace}
+        # Real false positive found live 2026-09-16: a repair agent correctly
+        # disambiguated with `using Alias = Full.Namespace;` (valid C#, real
+        # dotnet build succeeded, 0 errors) but the scan didn't recognize
+        # `Alias.TypeName` as resolved — it kept blocking a build that
+        # actually compiled fine. Map alias -> namespace so aliased
+        # qualifiers count as resolved too.
+        alias_to_ns = dict(_USING_ALIAS_RE.findall(text))
         code_only = _strip_comments_and_strings(text)
         for name, nss in collisions.items():
             if len(nss & usings) < 2:
                 continue
             # Two colliding namespaces both `using`d here — any reference to
-            # `name` that is not the FULL root-qualified path is ambiguous.
+            # `name` that is not the FULL root-qualified path (or a valid
+            # alias of one of the colliding namespaces) is ambiguous.
             # A real bug found live: a PARTIAL qualifier like
             # "AccountLookup.AccountRecord" also fails to compile (CS0246 —
             # a using-imported namespace's own name is not itself a
             # resolvable segment) but has a "." right before the type name,
             # so a naive `(?<!\.)` lookbehind wrongly treated it as already
-            # fixed. Only strip the exact full root-qualified forms; flag
-            # anything else, bare or partially qualified.
+            # fixed. Only strip the exact full root-qualified forms and
+            # alias-qualified forms; flag anything else, bare or partially
+            # qualified.
             name_re = re.compile(rf"\b{re.escape(name)}\b")
-            fully_qualified_forms = [f"{ns}.{name}" for ns in nss]
+            resolved_forms = [f"{ns}.{name}" for ns in nss] + [
+                f"{alias}.{name}" for alias, ns in alias_to_ns.items() if ns in nss
+            ]
             stripped = code_only
-            for fq in fully_qualified_forms:
+            for fq in resolved_forms:
                 stripped = stripped.replace(fq, "")
             if name_re.search(stripped):
                 problems.append(
