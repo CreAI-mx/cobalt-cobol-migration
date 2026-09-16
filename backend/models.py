@@ -133,3 +133,15 @@ class AgentStackConfig(BaseModel):
     circumstance: str = ""
     tools: dict[str, bool] = {}
     updated_at: Optional[str] = None
+
+
+class ExplorationSessionResponse(BaseModel):
+    """GET/POST exploration subsystem — Step 2 command center."""
+    run_id: str
+    status: str  # DRAFT|RUNNING|REVIEW|LOCKED|FAILED
+    started_at: str | None = None
+    finished_at: str | None = None
+    draft_pack: dict | None = None
+    locked_pack: dict | None = None
+    locked_at: str | None = None
+    live: bool = False

@@ -1,0 +1,202 @@
+"""Exploration Subsystem API — isolated from migration orchestrator."""
+from __future__ import annotations
+
+import asyncio
+import json
+import traceback
+from datetime import datetime, timezone
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, HTTPException
+import aiosqlite
+from ulid import ULID
+
+import exploration_core as core
+import exploration_orchestrator
+from db import get_db, open_db
+from models import ExplorationSessionResponse, PhaseEvent
+
+from routers import pipeline as pipeline_router
+
+router = APIRouter(prefix="/migration", tags=["exploration"])
+
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+RUNS_DIR = REPO_ROOT / "migration-state" / "runs"
+_exploration_tasks: dict[str, asyncio.Task] = {}
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+async def _ensure_session(conn: aiosqlite.Connection, run_id: str) -> None:
+    cur = await conn.execute(
+        "SELECT 1 FROM exploration_sessions WHERE run_id = ?", (run_id,),
+    )
+    if await cur.fetchone():
+        return
+    await conn.execute(
+        "INSERT INTO exploration_sessions (run_id, status, started_at, finished_at, "
+        "draft_pack_json, locked_pack_json, locked_at) VALUES (?, ?, NULL, NULL, NULL, NULL, NULL)",
+        (run_id, "DRAFT"),
+    )
+    await conn.commit()
+
+
+async def _load_session(conn: aiosqlite.Connection, run_id: str) -> dict | None:
+    cur = await conn.execute(
+        "SELECT status, started_at, finished_at, draft_pack_json, locked_pack_json, locked_at "
+        "FROM exploration_sessions WHERE run_id = ?",
+        (run_id,),
+    )
+    row = await cur.fetchone()
+    if not row:
+        return None
+    draft = json.loads(row[3]) if row[3] else None
+    locked = json.loads(row[4]) if row[4] else None
+    return {
+        "run_id": run_id,
+        "status": row[0],
+        "started_at": row[1],
+        "finished_at": row[2],
+        "draft_pack": draft,
+        "locked_pack": locked,
+        "locked_at": row[5],
+        "live": _exploration_is_live(run_id),
+    }
+
+
+def _exploration_is_live(run_id: str) -> bool:
+    t = _exploration_tasks.get(run_id)
+    return t is not None and not t.done()
+
+
+async def _execute_exploration(run_id: str) -> None:
+    conn = await open_db()
+    snapshot_conn = await open_db()
+    snapshot_task = asyncio.create_task(pipeline_router._snapshot_events_loop(run_id, snapshot_conn))
+    events = pipeline_router._run_state.setdefault(run_id, [])
+    try:
+        await exploration_orchestrator.execute_exploration(run_id, conn, events)
+    except Exception:
+        tb = traceback.format_exc()
+        print(f"[_execute_exploration] run_id={run_id} crashed:\n{tb}", flush=True)
+        events.append(PhaseEvent(
+            phase="Exploration · Modules", skill="exploration", status="BLOCKED",
+            detail=tb.strip().splitlines()[-1] if tb.strip() else "exploration failed",
+        ))
+        await conn.execute(
+            "UPDATE exploration_sessions SET status = ?, finished_at = ? WHERE run_id = ?",
+            ("FAILED", _now(), run_id),
+        )
+        await conn.commit()
+    finally:
+        snapshot_task.cancel()
+        try:
+            await snapshot_task
+        except asyncio.CancelledError:
+            pass
+        await snapshot_conn.close()
+        await conn.close()
+        events.append(PhaseEvent(
+            phase=pipeline_router._DONE_PHASE, skill="exploration", status="OK", detail="exploration stream end",
+        ))
+
+
+@router.get("/{run_id}/exploration/status", response_model=ExplorationSessionResponse)
+async def exploration_status(run_id: str, conn: aiosqlite.Connection = Depends(get_db)):
+    cur = await conn.execute("SELECT 1 FROM migration_runs WHERE run_id = ?", (run_id,))
+    if not await cur.fetchone():
+        raise HTTPException(404, f"No run found for run_id={run_id}")
+    await _ensure_session(conn, run_id)
+    data = await _load_session(conn, run_id)
+    assert data
+    return ExplorationSessionResponse(**data)
+
+
+@router.get("/{run_id}/exploration/pack")
+async def exploration_pack(run_id: str, conn: aiosqlite.Connection = Depends(get_db)):
+    data = await _load_session(conn, run_id)
+    if not data:
+        raise HTTPException(404, "No exploration session")
+    pack = data["locked_pack"] or data["draft_pack"]
+    if not pack:
+        raise HTTPException(404, "No exploration pack yet — run exploration first")
+    return pack
+
+
+@router.post("/{run_id}/exploration/start", response_model=ExplorationSessionResponse)
+async def exploration_start(run_id: str, conn: aiosqlite.Connection = Depends(get_db)):
+    cur = await conn.execute("SELECT 1 FROM migration_runs WHERE run_id = ?", (run_id,))
+    if not await cur.fetchone():
+        raise HTTPException(404, f"No run found for run_id={run_id}")
+    if not (RUNS_DIR / run_id / "source").is_dir():
+        raise HTTPException(400, "Intake source missing")
+    if _exploration_is_live(run_id):
+        data = await _load_session(conn, run_id)
+        return ExplorationSessionResponse(**data)
+    await _ensure_session(conn, run_id)
+    cur = await conn.execute(
+        "SELECT status FROM exploration_sessions WHERE run_id = ?", (run_id,),
+    )
+    row = await cur.fetchone()
+    if row and row[0] == "LOCKED":
+        raise HTTPException(409, "Exploration is locked — unlock not supported in this build")
+    if not pipeline_router._run_is_live(run_id):
+        pipeline_router._run_state[run_id] = []
+    task = asyncio.create_task(_execute_exploration(run_id))
+    _exploration_tasks[run_id] = task
+
+    def _done(_t: asyncio.Task) -> None:
+        _exploration_tasks.pop(run_id, None)
+
+    task.add_done_callback(_done)
+    data = await _load_session(conn, run_id)
+    return ExplorationSessionResponse(**data)
+
+
+@router.post("/{run_id}/exploration/lock", response_model=ExplorationSessionResponse)
+async def exploration_lock(run_id: str, conn: aiosqlite.Connection = Depends(get_db)):
+    if _exploration_is_live(run_id):
+        raise HTTPException(409, "Wait for exploration to finish before locking")
+    source_dir = RUNS_DIR / run_id / "source"
+    if not source_dir.is_dir():
+        raise HTTPException(400, "Intake source missing")
+    data = await _load_session(conn, run_id)
+    if not data or not data.get("draft_pack"):
+        raise HTTPException(400, "No draft pack — run exploration first")
+    pack = core.build_exploration_pack(run_id, source_dir, locked=True)
+    now = _now()
+    await conn.execute(
+        "UPDATE exploration_sessions SET locked_pack_json = ?, locked_at = ?, status = ?, "
+        "draft_pack_json = ? WHERE run_id = ?",
+        (json.dumps(pack), now, "LOCKED", json.dumps(pack), run_id),
+    )
+    await conn.commit()
+    data = await _load_session(conn, run_id)
+    return ExplorationSessionResponse(**data)
+
+
+@router.post("/{run_id}/exploration/modules/{module_id}/notes")
+async def exploration_module_notes(
+    run_id: str, module_id: str, body: dict, conn: aiosqlite.Connection = Depends(get_db),
+):
+    text = (body.get("text") or "").strip()
+    data = await _load_session(conn, run_id)
+    if not data or not data.get("draft_pack"):
+        raise HTTPException(404, "No draft pack")
+    pack = data["draft_pack"]
+    found = False
+    for mod in pack.get("modules", []):
+        if mod.get("module_id") == module_id:
+            mod["human_notes"] = text
+            found = True
+            break
+    if not found:
+        raise HTTPException(404, f"Unknown module {module_id}")
+    await conn.execute(
+        "UPDATE exploration_sessions SET draft_pack_json = ? WHERE run_id = ?",
+        (json.dumps(pack), run_id),
+    )
+    await conn.commit()
+    return {"module_id": module_id, "human_notes": text}

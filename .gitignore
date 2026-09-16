@@ -30,6 +30,7 @@ skills-lock.json
 
 # Non-Cobalt reference material kept locally, never published
 _bodega/
+.env
 
 # Runtime lock / dangling symlink to an unrelated personal skill dir
 .claude/scheduled_tasks.lock

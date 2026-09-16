@@ -292,7 +292,7 @@ def inventory_source(source_dir: Path) -> list[SourceFile]:
     return files
 
 
-def _connected_cobol_groups(files: list[SourceFile]) -> list[list[SourceFile]]:
+def connected_cobol_groups(files: list[SourceFile]) -> list[list[SourceFile]]:
     cobol = [f for f in files if f.kind == "cobol_source"]
     if not cobol:
         return []
@@ -348,7 +348,7 @@ def fallback_plan(run_id: str, plan_id: str, source_dir: Path,
     files = files if files is not None else inventory_source(source_dir)
     sln = solution_name_from_source(source_dir)
     copybooks = [f.path for f in files if f.kind == "copybook"]
-    groups = _connected_cobol_groups(files)
+    groups = connected_cobol_groups(files)
     items: list[WorkItem] = []
     conversion_ids: list[str] = []
 

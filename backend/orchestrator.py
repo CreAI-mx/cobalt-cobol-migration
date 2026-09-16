@@ -163,6 +163,96 @@ async def _set_stage(conn: aiosqlite.Connection, plan: MigrationPlan, stage: str
     await conn.commit()
 
 
+# Real bug found 2026-09-16 (run 01M2NN5Q765RDGP4ZCV1Q6WC4H): two work items
+# each legitimately declare their own `AccountRecord` type in their own
+# `Application.UseCases.*` namespace, but the generated `Cli/Program.cs`
+# referenced the bare simple name — CS0104 ambiguous reference, plus a
+# CS0738 on any interface member typed with it. This burns a whole
+# dotnet-build timeout/retry cycle discovering what a cheap static scan can
+# catch instantly and hand straight to the "build" repair path, correctly
+# labeled, before ever invoking dotnet.
+_NAMESPACE_RE = re.compile(r"^\s*namespace\s+([\w.]+)", re.MULTILINE)
+_TYPE_DECL_RE = re.compile(r"^\s*(?:public|internal)?\s*(?:sealed\s+|abstract\s+)?(?:class|record|struct)\s+(\w+)", re.MULTILINE)
+_USING_RE = re.compile(r"^\s*using\s+([\w.]+)\s*;", re.MULTILINE)
+
+
+def _strip_comments_and_strings(text: str) -> str:
+    """Remove // line comments, /* */ block comments, and "..." string
+    literals so a bare type-name match inside one of those can't produce a
+    false positive. Deliberately crude (no verbatim/interpolated-string
+    escaping) — good enough for a heuristic pre-build scan, real dotnet
+    build is still the ground truth if this scan is wrong either way."""
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+    text = re.sub(r"//.*", "", text)
+    text = re.sub(r'"(?:[^"\\]|\\.)*"', '""', text)
+    return text
+
+
+def _file_namespace_and_types(text: str) -> tuple[str, list[str]]:
+    ns_match = _NAMESPACE_RE.search(text)
+    namespace = ns_match.group(1) if ns_match else ""
+    types = _TYPE_DECL_RE.findall(text)
+    return namespace, types
+
+
+def detect_type_name_collisions(csharp: Path) -> str:
+    """Static pre-build scan: same simple type name declared in two
+    different namespaces, both `using`d (unqualified) by the same file. Real,
+    cheap check — no dotnet invocation. Returns a repair-ready diagnostic
+    string, or "" if clean. Callers: orchestrator._verify_chain."""
+    name_to_namespaces: dict[str, set[str]] = {}
+    cs_files = [p for p in csharp.rglob("*.cs") if not any(part in {"obj", "bin"} for part in p.parts)]
+    per_file: dict[Path, tuple[str, list[str], str]] = {}
+    for path in cs_files:
+        try:
+            text = path.read_text(errors="replace")
+        except OSError:
+            continue
+        namespace, types = _file_namespace_and_types(text)
+        per_file[path] = (namespace, types, text)
+        for t in types:
+            name_to_namespaces.setdefault(t, set()).add(namespace)
+
+    collisions = {name: nss for name, nss in name_to_namespaces.items() if len(nss) > 1}
+    if not collisions:
+        return ""
+
+    problems: list[str] = []
+    for path, (namespace, _types, text) in per_file.items():
+        usings = set(_USING_RE.findall(text)) | {namespace}
+        code_only = _strip_comments_and_strings(text)
+        for name, nss in collisions.items():
+            if len(nss & usings) < 2:
+                continue
+            # Two colliding namespaces both `using`d here — any reference to
+            # `name` that is not the FULL root-qualified path is ambiguous.
+            # A real bug found live: a PARTIAL qualifier like
+            # "AccountLookup.AccountRecord" also fails to compile (CS0246 —
+            # a using-imported namespace's own name is not itself a
+            # resolvable segment) but has a "." right before the type name,
+            # so a naive `(?<!\.)` lookbehind wrongly treated it as already
+            # fixed. Only strip the exact full root-qualified forms; flag
+            # anything else, bare or partially qualified.
+            name_re = re.compile(rf"\b{re.escape(name)}\b")
+            fully_qualified_forms = [f"{ns}.{name}" for ns in nss]
+            stripped = code_only
+            for fq in fully_qualified_forms:
+                stripped = stripped.replace(fq, "")
+            if name_re.search(stripped):
+                problems.append(
+                    f"{path.name}: '{name}' is ambiguous between "
+                    + " and ".join(sorted(nss))
+                    + " — every use must be fully qualified or aliased."
+                )
+
+    if not problems:
+        return ""
+    return (
+        "Static pre-build check found ambiguous type references (would fail "
+        "as CS0104/CS0738 in dotnet build):\n" + "\n".join(problems)
+    )
+
+
 def scaffold_solution(target: Path, sln: str) -> None:
     """Deterministic Clean Architecture skeleton — never LLM-generated.
     Real change 2026-09-15: layers moved from flat "{sln}.Layer/" folders
@@ -497,6 +587,40 @@ async def _run_worker(conn: aiosqlite.Connection, run_id: str, plan: MigrationPl
 
 async def execute_migration(run_id: str, conn: aiosqlite.Connection, events: list) -> None:
     source_dir, csharp, _ws = _run_dirs(run_id)
+
+    # 2026-09-16 (user, verbatim: "si queremos lo verdaderamente agentico debe
+    # instalarse lo necesario supervisiondo"): first stage, before Planning —
+    # confirm/install the toolchain the ORIGINAL COBOL and TARGET C# build
+    # actually need, in this already-isolated run environment. Every install
+    # command's real output is logged as a PhaseEvent (supervised, visible
+    # live in the UI), never silent.
+    events.append(PhaseEvent(
+        phase="Environment Setup", skill="toolchain-check", status="RUNNING",
+        detail="checking cobc (GnuCOBOL) and dotnet",
+    ))
+
+    def _on_step(label: str, result: dict) -> None:
+        events.append(PhaseEvent(
+            phase="Environment Setup", skill="toolchain-check", status="RUNNING",
+            detail=f"{label}: exit={result['exit_code']}\n{result['stdout'][:500]}",
+        ))
+
+    toolchain_ready = cobol_compilers.ensure_toolchain(_on_step)
+    events.append(PhaseEvent(
+        phase="Environment Setup", skill="toolchain-check",
+        status="OK" if toolchain_ready else "BLOCKED",
+        detail="cobc + dotnet ready" if toolchain_ready
+        else "toolchain install failed — see steps above",
+    ))
+    if not toolchain_ready:
+        await conn.execute(
+            "UPDATE migration_runs SET status = 'FAILED', finished_at = ? WHERE run_id = ?",
+            (datetime.now(timezone.utc).isoformat(), run_id),
+        )
+        await conn.commit()
+        events.append(PhaseEvent(phase="__done__", skill="pipeline", status="OK", detail="stream complete"))
+        return
+
     plan = await ensure_plan(conn, run_id, events)
     # Real defect found 2026-09-15 (run 01M2KM41FKP2V5Y38628VCWYRC): if the
     # process dies mid-item (a server restart, a crash) while a work item is
@@ -596,6 +720,19 @@ async def execute_migration(run_id: str, conn: aiosqlite.Connection, events: lis
         events.append(PhaseEvent(
             phase="Building", skill="dotnet-build", status="RUNNING", detail="dotnet build gate",
         ))
+        collision_diag = detect_type_name_collisions(csharp)
+        if collision_diag:
+            events.append(PhaseEvent(
+                phase="Building", skill="dotnet-build", status="BLOCKED",
+                detail=collision_diag[:600],
+            ))
+            # Own stage key ("type_collision", not "build") — a heuristic
+            # regex scan is not real dotnet, so its own failure must not
+            # spend the same MAX_RETRY budget a genuine dotnet build error
+            # gets (Codex audit finding 2026-09-16): a stubborn false
+            # positive here would otherwise exhaust "build"'s budget before
+            # a single real `dotnet build` ever ran.
+            return False, "type_collision", collision_diag
         ok, log = await _dotnet(["build"], cli_dir if cli_dir.is_dir() else csharp)
         events.append(PhaseEvent(
             phase="Building", skill="dotnet-build",
@@ -652,6 +789,7 @@ async def execute_migration(run_id: str, conn: aiosqlite.Connection, events: lis
 
     _REPAIR_FNS = {
         "build": (llm.repair_csharp, "compiling"),
+        "type_collision": (llm.repair_type_collision, "ambiguous type name"),
         "test": (llm.repair_test_failure, "test failure"),
         "parity": (llm.repair_parity_mismatch, "COBOL-vs-C# mismatch"),
     }
@@ -665,7 +803,7 @@ async def execute_migration(run_id: str, conn: aiosqlite.Connection, events: lis
     # had zero attempts left for the third, unrelated bug. Each gate gets its
     # own independent budget instead, so one gate's flakiness never starves
     # another gate's real, fixable bug.
-    stage_attempts: dict[str, int] = {"build": 0, "test": 0, "parity": 0}
+    stage_attempts: dict[str, int] = {"build": 0, "type_collision": 0, "test": 0, "parity": 0}
     ok, failed_stage, log = await _verify_chain()
     while not ok and stage_attempts[failed_stage] < MAX_RETRY:
         over_budget, spent = await _cost_budget_exceeded(conn, run_id)

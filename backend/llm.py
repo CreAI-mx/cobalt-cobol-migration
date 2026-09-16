@@ -274,6 +274,20 @@ Rules:
   must satisfy MULTIPLE interfaces with same-named-but-different types,
   check each interface's own (already generated) declaration above for its
   own exact property names before constructing that specific type.
+- Same issue, different symptom — a real CS0104/CS0738 this session: a `Cli`
+  file with `using` directives pulling in two different
+  `...Application.UseCases.*` namespaces that BOTH declare a type with the
+  same simple name (e.g. `AccountLookup.AccountRecord` and
+  `TransactionPosting.AccountRecord`, each a legitimate separate type). If
+  this file references that simple name bare (`AccountRecord`), the compiler
+  reports it ambiguous, and any interface member typed with it silently
+  fails to implement (CS0738) because the wrong one got picked. Whenever a
+  file `using`s more than one `Application.UseCases.*` namespace, check
+  whether any type name repeats across them — if so, ALWAYS reference every
+  use of that name fully qualified (`CobolBankingSystems.Application.UseCases.
+  AccountLookup.AccountRecord`) or via an explicit `using X = Full.Namespace.
+  Type;` alias. Never rely on the bare simple name in that situation, even
+  if only one of the two types is actually used in a given method.
 {cli_manifest_rule}
 JSON only when done: {{"files_written": ["<relative path>", ...]}}
 """
@@ -475,6 +489,47 @@ Mismatch detail (COBOL oracle output vs C# candidate output, per program):
 
 Write tool only. JSON when done: {{"files_written": ["<path>", ...], "fixed": true}}
 """
+
+
+# Added 2026-09-16 after a Codex audit flagged that our static pre-build
+# collision scan (orchestrator.detect_type_name_collisions) was reusing
+# _REPAIR_PROMPT — written for a real dotnet CS0234 alias-collision pattern
+# with its own worked example — which could steer this repair toward the
+# WRONG fix (renaming a nonexistent using-alias) instead of the actual
+# problem: a bare reference to a type name declared in two different
+# namespaces. Dedicated prompt, matching the diagnostic this scan actually
+# emits (see orchestrator.detect_type_name_collisions's return string).
+_TYPE_COLLISION_REPAIR_PROMPT = """A static pre-build scan (not dotnet — this is
+faster and runs first) found that a C# file references a type name by its bare
+simple name, but that same simple name is declared in TWO different
+`Application.UseCases.*` namespaces as two separate, legitimate types (e.g.
+`AccountLookup.AccountRecord` and `TransactionPosting.AccountRecord`, each
+with its own fields — do not merge or delete either type, they are correct
+as-is). Fix ONLY the ambiguous references: qualify each one with its FULL
+namespace path starting from the root (e.g.
+`CobolBankingSystems.Application.UseCases.AccountLookup.AccountRecord`), or
+add a `using X = Full.Namespace.Type;` alias at the top of the file — never
+rename or remove either colliding type itself.
+
+CRITICAL — a real mistake seen before: do NOT write a PARTIAL/relative
+qualifier like `AccountLookup.AccountRecord`. Even with
+`using CobolBankingSystems.Application.UseCases.AccountLookup;` at the top of
+the file, `AccountLookup` alone is not a resolvable namespace segment from
+this file's own namespace (e.g. `CobolBankingSystems.Cli`) — that produces
+CS0246 "the type or namespace name 'AccountLookup' could not be found". Only
+the FULL dotted path from the global root, or a `using` alias, actually
+resolves.
+
+Diagnostic:
+{errors}
+
+Write tool only. JSON when done: {{"files_written": ["<path>", ...], "fixed": true}}
+"""
+
+
+async def repair_type_collision(target_dir: Path, errors: str, timeout_s: int = _TIMEOUT_S,
+                                on_progress=None) -> ConversionResult:
+    return await repair_csharp(target_dir, errors, timeout_s, on_progress, prompt_template=_TYPE_COLLISION_REPAIR_PROMPT)
 
 
 async def repair_test_failure(target_dir: Path, errors: str, timeout_s: int = _TIMEOUT_S,

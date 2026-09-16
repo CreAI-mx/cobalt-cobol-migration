@@ -128,6 +128,83 @@ def run_subprocess(
         }
 
 
+# 2026-09-16 (user, verbatim: "si queremos lo verdaderamente agentico debe
+# instalarse lo necesario supervisiondo"): find_cobc()/find_dotnet() above
+# only LOCATE a binary — they never install one. In a fresh sandboxed run
+# environment with neither tool present, the pipeline used to fail deep
+# inside Building/Parity with a confusing "not found", instead of a clear,
+# supervised setup step up front. User explicitly authorized package
+# installs in THIS isolated dev environment via a sudo password stored in
+# .env (never logged, never put in any PhaseEvent/run_events detail text).
+_DOTNET_INSTALL_DIR = "/home/frg/.claude3_profile/.dotnet"
+
+
+def _sudo_password() -> str | None:
+    return os.environ.get("SUDO_PASSWORD")
+
+
+def install_gnucobol() -> dict:
+    """apt-get install gnucobol, non-interactive, via sudo -S (password piped
+    on stdin, never as an argv element — argv is visible to other processes
+    via /proc, stdin is not)."""
+    password = _sudo_password()
+    if not password:
+        return {
+            "command": "apt-get install -y gnucobol",
+            "stdout": "SUDO_PASSWORD not set in .env — refusing to attempt an unattended install.",
+            "exit_code": 1,
+            "ok": False,
+        }
+    env = {**os.environ, "DEBIAN_FRONTEND": "noninteractive"}
+    return run_subprocess(
+        ["sudo", "-S", "apt-get", "install", "-y", "gnucobol"],
+        cwd=Path.cwd(),
+        input_text=password + "\n",
+        timeout=300,
+        env=env,
+    )
+
+
+def install_dotnet() -> dict:
+    """Official Microsoft dotnet-install.sh into _DOTNET_INSTALL_DIR — NOT
+    apt: this session already found the apt-packaged dotnet-host broken
+    (missing libhostfxr.so). No sudo needed — installs into the user's own
+    home, matching the existing working fallback path find_dotnet() already
+    checks."""
+    script = "/tmp/dotnet-install.sh"
+    fetch = run_subprocess(
+        ["curl", "-sSL", "https://dot.net/v1/dotnet-install.sh", "-o", script],
+        cwd=Path.cwd(), timeout=60,
+    )
+    if not fetch["ok"]:
+        return fetch
+    os.chmod(script, 0o755)
+    return run_subprocess(
+        [script, "--channel", "8.0", "--install-dir", _DOTNET_INSTALL_DIR],
+        cwd=Path.cwd(), timeout=300,
+    )
+
+
+def ensure_toolchain(on_step) -> bool:
+    """Checks cobc/dotnet, installs whichever is missing, reports every real
+    command + its real output via on_step(label, result_dict) — supervised,
+    never a silent background install. Returns True only if both tools are
+    confirmed usable afterward. Callers: orchestrator.execute_migration
+    (the very first stage, before Planning)."""
+    ok = True
+    if find_cobc() is None:
+        result = install_gnucobol()
+        on_step("install gnucobol", result)
+        if find_cobc() is None:
+            ok = False
+    if find_dotnet() is None:
+        result = install_dotnet()
+        on_step("install dotnet", result)
+        if find_dotnet() is None:
+            ok = False
+    return ok
+
+
 def build_fixed_width_record(field_values: list[str]) -> str:
     """Concatenate already-formatted, already-padded field values into one
     fixed-width DISPLAY record line. Generalizes parity_demo._sandbox_accounts_line

@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 
 import llm
 from db import init_db, DB_PATH
-from routers import intake, pipeline
+from routers import intake, pipeline, exploration
 
 # React build output (frontend/dist). The old Jinja2 template at
 # templates/index.html stays on disk as reference but is no longer routed.
@@ -60,6 +60,7 @@ app = FastAPI(
 )
 app.include_router(intake.router)
 app.include_router(pipeline.router)
+app.include_router(exploration.router)
 
 # COBALT-1 (audit 2026-09-16): every /migration/* endpoint — including
 # github-push, which uses this machine's real stored GitHub credential, and

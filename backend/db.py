@@ -24,6 +24,7 @@ async def init_db() -> None:
         await _migrate_architecture_decisions(conn)
         await _migrate_run_events(conn)
         await _migrate_work_items(conn)
+        await _migrate_exploration_sessions(conn)
 
 
 async def _migrate_file_kind(conn: aiosqlite.Connection) -> None:
@@ -177,6 +178,28 @@ async def _migrate_work_items(conn: aiosqlite.Connection) -> None:
         )"""
     )
     await conn.execute("CREATE INDEX idx_work_items_run ON work_items(run_id)")
+    await conn.commit()
+
+
+
+
+async def _migrate_exploration_sessions(conn: aiosqlite.Connection) -> None:
+    cursor = await conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='exploration_sessions'"
+    )
+    if await cursor.fetchone():
+        return
+    await conn.execute(
+        """CREATE TABLE exploration_sessions (
+            run_id TEXT PRIMARY KEY REFERENCES migration_runs(run_id),
+            status TEXT NOT NULL DEFAULT 'DRAFT',
+            started_at TEXT,
+            finished_at TEXT,
+            draft_pack_json TEXT,
+            locked_pack_json TEXT,
+            locked_at TEXT
+        )"""
+    )
     await conn.commit()
 
 
