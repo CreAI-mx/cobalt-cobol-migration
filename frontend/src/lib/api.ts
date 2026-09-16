@@ -447,7 +447,7 @@ export interface RelationGraph {
   schema: number
   generated_by?: string
   nodes: RelationGraphNode[]
-  edges: { source: string; target: string; kind: string; evidence?: string[] }[]
+  edges: { source: string; target: string; kind: string; label?: string; evidence?: string[] }[]
 }
 
 export interface ExplorationModule {

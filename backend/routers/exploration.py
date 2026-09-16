@@ -61,41 +61,46 @@ def _hydrate_pack_documentation(run_id: str, pack: dict | None) -> dict | None:
     """Runs saved before documentation metadata was persisted may still have files on disk."""
     if not pack:
         return pack
-    paths = _documentation_paths_on_disk(run_id)
-    if not paths:
-        return pack
-    doc = dict(pack.get("documentation") or {})
-    existing = doc.get("documents") or []
-    if not existing or len(existing) < len(paths):
-        doc["documents"] = paths
-    doc.setdefault("scope", "Complete repository AS-IS exploration only; no TO-BE or migration artifacts")
-    doc.setdefault("root", str(_documentation_root(run_id)))
-    doc.setdefault("agent_status", doc.get("agent_status") or "hydrated from disk")
-    graph_path = _documentation_root(run_id) / "documentation_graph.json"
-    if graph_path.is_file() and not doc.get("graph"):
-        try:
-            doc["graph"] = json.loads(graph_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            pass
     merged = dict(pack)
-    merged["documentation"] = doc
+    paths = _documentation_paths_on_disk(run_id)
+    if paths:
+        doc = dict(pack.get("documentation") or {})
+        existing = doc.get("documents") or []
+        if not existing or len(existing) < len(paths):
+            doc["documents"] = paths
+        doc.setdefault("scope", "Complete repository AS-IS exploration only; no TO-BE or migration artifacts")
+        doc.setdefault("root", str(_documentation_root(run_id)))
+        doc.setdefault("agent_status", doc.get("agent_status") or "hydrated from disk")
+        graph_path = _documentation_root(run_id) / "documentation_graph.json"
+        if graph_path.is_file() and not doc.get("graph"):
+            try:
+                doc["graph"] = json.loads(graph_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                pass
+        merged["documentation"] = doc
     graph_file = RUNS_DIR / run_id / "exploration" / "estate_relation_graph.json"
     if graph_file.is_file():
         try:
-            merged["relation_graph"] = json.loads(graph_file.read_text(encoding="utf-8"))
+            loaded = json.loads(graph_file.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict) and loaded.get("generated_by") == "agent" and loaded.get("nodes"):
+                merged["relation_graph"] = loaded
         except json.JSONDecodeError:
             pass
     source_root = RUNS_DIR / run_id / "source"
     for prog in merged.get("programs") or []:
-        if prog.get("flow_nodes"):
-            continue
         rel = prog.get("path") or ""
         fp = source_root / rel
         if not fp.is_file():
             continue
         nodes, edges = core.procedure_flowchart(fp.read_text(errors="replace"), prog.get("program_id"))
+        nodes, edges = core.compress_flowchart(nodes, edges)
         prog["flow_nodes"] = nodes
         prog["flow_edges"] = edges
+    existing = merged.get("relation_graph") or {}
+    if existing.get("generated_by") != "agent":
+        merged["relation_graph"] = core.estate_logic_flowchart(merged.get("programs") or [])
+        graph_file.parent.mkdir(parents=True, exist_ok=True)
+        graph_file.write_text(json.dumps(merged["relation_graph"], indent=2), encoding="utf-8")
     return merged
 
 

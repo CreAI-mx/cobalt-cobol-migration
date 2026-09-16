@@ -17,6 +17,8 @@ from typing import Any
 
 from work_items import inventory_source
 
+from exploration_core import estate_logic_flowchart, flowchart_to_mermaid
+
 
 _COPY_RE = re.compile(r"^\s*COPY\s+([A-Z0-9-]+)", re.IGNORECASE | re.MULTILINE)
 _FILE_RE = re.compile(r"^\s*(SELECT|OPEN|READ|WRITE|REWRITE|CLOSE)\b", re.IGNORECASE | re.MULTILINE)
@@ -181,6 +183,43 @@ def build_documentation_manifest(source_dir: Path, pack: dict[str, Any]) -> dict
     return {"generated_at": _now(), "programs": programs, "facts": facts, "rules": rules, "risks": risks, "questions": questions}
 
 
+
+def _as_is_diagrams_markdown(pack: dict[str, Any]) -> str:
+    """A11 dossier: the same pseudocode flow as the exploration SVG, in Mermaid."""
+    graph = pack.get("relation_graph") if isinstance(pack.get("relation_graph"), dict) else {}
+    if not (graph.get("nodes") or []):
+        graph = estate_logic_flowchart(pack.get("programs") or [])
+    flow = flowchart_to_mermaid(graph)
+    call_edges = pack.get("call_graph_resolved", {}).get("edges") or []
+    call_lines = "\n".join(
+        f'    "{e.get("from_path")}" --> "{e.get("to_path")}"' for e in call_edges
+    ) or '    Empty["No resolved CALL edges"]'
+    evidence_rows = []
+    for node in graph.get("nodes") or []:
+        ev = (node.get("evidence") or ["—"])
+        evidence_rows.append([
+            str(node.get("kind") or "—"),
+            str(node.get("label") or node.get("id") or "—")[:72],
+            str(ev[0]) if ev else "—",
+        ])
+    return (
+        "# Diagramas AS-IS\n\n"
+        "A11 · texto versionable (Mermaid). Mismos óvalos, rombos, cilindros y "
+        "ramas yes/no que el mapa visual de exploración. Cada nodo cita `file:line`. "
+        "No es el grafo CALL de programas: es el flujo de control AS-IS.\n\n"
+        "## 1. Flujo de control AS-IS (pseudocódigo)\n\n"
+        "```mermaid\n"
+        f"{flow}"
+        "```\n\n"
+        "## 2. Grafo de llamadas\n\n"
+        "```mermaid\ngraph TD\n"
+        f"{call_lines}\n"
+        "```\n\n"
+        "## 3. Trazabilidad de nodos\n\n"
+        + _markdown_table(["Figura", "Nodo", "Origen"], evidence_rows or [["—", "—", "—"]])
+        + "\n"
+    )
+
 def write_as_is_documentation(output_dir: Path, source_dir: Path, pack: dict[str, Any]) -> dict[str, Any]:
     """Write the Tier 1/2 dossier and return its machine-readable manifest.
 
@@ -265,8 +304,7 @@ def write_as_is_documentation(output_dir: Path, source_dir: Path, pack: dict[str
     (technical_dir / "08-inventario-de-integraciones.md").write_text("# Inventario de integraciones\n\n" + _markdown_table(["Archivo", "Tipo detectado", "Estado"], integration_rows or [["—", "—", "—"]]) + "\n", encoding="utf-8")
     batch_rows = [[f["path"], "candidate" if f["batch"] else "none detected"] for f in manifest["facts"]["files"]]
     (technical_dir / "09-catalogo-de-procesos-batch.md").write_text("# Catálogo de procesos batch\n\n" + _markdown_table(["Archivo", "Señal batch"], batch_rows or [["—", "none detected"]]) + "\n", encoding="utf-8")
-    mermaid_edges = "\n".join(f'    "{e["from_path"]}" --> "{e["to_path"]}"' for e in pack.get("call_graph_resolved", {}).get("edges", [])) or "    Empty[No resolved CALL edges]"
-    (technical_dir / "10-diagramas-as-is.md").write_text(f"# Diagramas AS-IS\n\n## Grafo de llamadas\n\n```mermaid\ngraph TD\n{mermaid_edges}\n```\n", encoding="utf-8")
+    (technical_dir / "10-diagramas-as-is.md").write_text(_as_is_diagrams_markdown(pack), encoding="utf-8")
     risk_rows = [[r["id"], r["text"], r.get("module_id") or "estate", "pending review"] for r in manifest["risks"]]
     (technical_dir / "11-evaluacion-de-complejidad-y-riesgo.md").write_text("# Complejidad y riesgo\n\n" + _markdown_table(["ID", "Hallazgo", "Ámbito", "Estado"], risk_rows or [["—", "No se detectaron riesgos por las reglas actuales", "estate", "pending review"]]) + "\n", encoding="utf-8")
 
@@ -309,6 +347,11 @@ def validate_as_is_documentation(output_dir: Path, source_dir: Path, required_do
     trace_path = output_dir / "00-trazabilidad" / "registro-trazabilidad.csv"
     if not trace_path.is_file():
         return errors + ["missing traceability CSV"]
+    diagrams = output_dir / "02-tecnico" / "10-diagramas-as-is.md"
+    if diagrams.is_file():
+        body = diagrams.read_text(encoding="utf-8")
+        if "flowchart" not in body or "```mermaid" not in body:
+            errors.append("A11 diagrams MD lacks a Mermaid flowchart")
     graph_path = output_dir / "documentation_graph.json"
     try:
         graph = json.loads(graph_path.read_text(encoding="utf-8"))

@@ -306,6 +306,7 @@ async def execute_exploration(run_id: str, conn, events: list) -> None:
             phase="Exploration · Graph", skill="cobol-relation-graph", status="SKIPPED",
             detail=graph_cost.get("reason") or "agent did not produce a relation graph",
         ))
+        pack.pop("relation_graph", None)
     await conn.execute(
         "UPDATE exploration_sessions SET draft_pack_json = ? WHERE run_id = ?",
         (json.dumps(pack), run_id),

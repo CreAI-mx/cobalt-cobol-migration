@@ -897,6 +897,16 @@ Non-negotiable evidence contract:
   scripts and documents. They are AS-IS evidence even when they are outside
   the future backend migration scope; label that scope instead of omitting it.
 - Diagrams must be Mermaid text and trace their nodes/edges to source.
+- CRITICAL A11: `02-tecnico/10-diagramas-as-is.md` is the AS-IS diagram
+  deliverable (GUIDE A11), not a CALL stub. Read the skeleton already in
+  OUTPUT_DIR: it has a Mermaid `flowchart TD` with stadiums (start/end),
+  diamonds (decisions), cylinders (data), subroutines (PERFORM/CALL) and
+  yes/no/loop edges — the same logical flow as the exploration map.
+  ENRICH it with architecture, sequence and data-flow mermaid like
+  REFERENCE_PACKAGE/02-tecnico/10-diagramas-as-is.md for THIS estate.
+  NEVER replace the control-flow flowchart with
+  `Empty[No resolved CALL edges]` or a programs-only CALL graph.
+  Every mermaid node/edge cites `file:line`.
 - Never silently invent a business intent from a technical construct.
 - `documentation_graph.json` is a JSON object with `nodes` and `edges`.
   Each node has `id`, `label`, `kind` (`program|rule|risk|question|document`),

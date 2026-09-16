@@ -4,15 +4,15 @@
 
 | Ítem | Estado | Notas |
 |------|--------|--------|
-| Diagrama CALL inline (Migration Modules) | **Parcial** | `ModuleCallGraph.tsx` — subgrafo real del pack; **no** Mermaid; **no** zoom/pan/hover |
+| Diagrama CALL inline (Migration Modules) | **Hecho (Step 2)** | Hero `RepositoryLandscape` = CALL pack + zoom/pan/hover; color por kind no por file |
 | Superficie draft pack / revisión humana (Step 2) | **Hecho** | Command bar, módulos, notas, Lock; solo pantalla 2 |
 | Business rules en tarjetas | **Hecho** | `BusinessRuleCards.tsx` — usuario pide **menos protagonismo** (colapsar por default) |
 | risk_tier + wave en UI del plan | **Pendiente** | Backend listo; Step 5 / `WorkItemBoard` sin badges |
 | Strands SDK en exploración | **Pendiente** | Decisión de producto; ESS actual con asyncio |
 | Phase 2 agentica (reglas reales) | **Pendiente** | Stubs `deterministic_draft` en pack |
-| Dedup reglas BR-CALL duplicadas | **Pendiente** | Bug reportado (ej. x3 OperationsProgram) — backend `draft_business_rules` |
+| Dedup reglas BR-CALL duplicadas | **Hecho** | `dedupe_business_rules` al cerrar el módulo |
 
-**Siguiente diseño acordado (solo Step 2):** grafo interactivo como elemento principal; business rules en acordeón cerrado por default.
+**Siguiente diseño acordado (solo Step 2):** grafo interactivo como elemento principal; business rules en acordeón cerrado por default. **Aplicado 2026-09-16:** CALL graph hero + rules accordion + pipeline humano (Understanding / Review) con “Show detail”.
 
  — para reenviar al agente de frontend / al usuario
 
@@ -21,6 +21,21 @@ Convención: aquí deposito sugerencias de cambio que NO están en mi scope dire
 reenvía cuando corresponde. No implemento nada de esta lista sin que me lo pidan.
 
 ## Pendientes
+
+- **Reducir el pipeline a 5 fases visibles para el humano (colapsar, no eliminar).**
+  Usuario, verbatim: "esperaría algo más reducido, algo intuitivo humanamente" — 15
+  eventos de fase para un repo de 3 archivos es ceremonia desproporcionada. Propuesta:
+  1. **Entendiendo tu código** = Discovery + Structural + Dependency + Modules +
+     Business logic + Graph + Documentation (exploration_orchestrator.py)
+  2. **Revisión** = Human Lock (`POST /exploration/lock`) — único punto de acción humana
+  3. **Planificando** = Environment Setup + Analyzing (orchestrator.py)
+  4. **Construyendo y verificando** = Generating + Build + Test + Parity + todo el
+     ciclo Repairing (mostrar como "en progreso · N reintentos", no cada gate)
+  5. **Listo** = Documenting + PASSED/FAILED
+  Los 15 eventos internos siguen corriendo y persistiendo igual (auditoría/debug
+  intactos) — esto es agrupación en la UI (`PhaseTimeline`/similar), no cambio de
+  arquitectura backend. Requiere un mapeo `phase_real -> fase_visible` del lado
+  frontend, con un toggle "ver detalle" para quien quiera las 15 fases reales.
 
 - ~~**Diagrama de arquitectura inline en "Migration Modules".**~~ **Parcial** — ver `ModuleCallGraph.tsx`. Usuario pidió
   verlo directo en esa pantalla, no en un link externo. Datos reales YA

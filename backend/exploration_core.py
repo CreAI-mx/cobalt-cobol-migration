@@ -165,7 +165,12 @@ def _flow_label(verb: str, rest: str) -> str:
 
 
 def procedure_flowchart(text: str, program_id: str | None = None) -> tuple[list[dict], list[dict]]:
-    """One pseudocode flowchart: statements, IF, PERFORM UNTIL, CALL — not two graphs."""
+    """One pseudocode flowchart of PROCEDURE logic.
+
+    A monolith in a single script still explodes: IF, PERFORM, PERFORM UNTIL,
+    READ/AT END, CALL, STOP. Named PERFORM inlines the paragraph body so the
+    diagram is control flow, not files or swimlanes.
+    """
     pid_m = PROGRAM_ID_RE.search(text)
     pid = program_id or (pid_m.group(1) if pid_m else "PROGRAM")
     proc = _procedure_section(text)
@@ -189,7 +194,9 @@ def procedure_flowchart(text: str, program_id: str | None = None) -> tuple[list[
         return nodes, edges
 
     stmts: list[tuple[str, str, int]] = []
-    for i, raw in enumerate(proc.splitlines(), start=text[: text.lower().find("procedure")].count("\n") + 2):
+    proc_idx = text.lower().find("procedure")
+    line_base = (text[: proc_idx].count("\n") + 2) if proc_idx >= 0 else 2
+    for i, raw in enumerate(proc.splitlines(), start=line_base):
         line = raw.rstrip()
         if not line.strip() or line.strip().startswith("*"):
             continue
@@ -207,123 +214,259 @@ def procedure_flowchart(text: str, program_id: str | None = None) -> tuple[list[
         if vm:
             stmts.append((vm.group(1).upper().replace(" ", "-"), vm.group(2).strip().rstrip("."), i))
 
-    prev: str | None = start
-    stack: list[tuple[str, str, str | None]] = []
-    skip_until_end_read = False
-
+    paras: dict[str, list[tuple[str, str, int]]] = {}
+    order: list[str] = []
+    current = pid.upper()
+    paras[current] = []
+    order.append(current)
     for verb, rest, line in stmts:
-        if skip_until_end_read and verb not in {"AT-END", "END-READ"}:
-            if verb == "END-IF":
-                pass
-            elif rest.upper().startswith("END-READ") or verb.startswith("END"):
-                skip_until_end_read = False
-                continue
-        upper_rest = rest.upper()
-
         if verb == "PARA":
-            nid = add("process", rest, line)
-            link(prev, nid)
-            prev = nid
+            current = rest.upper()
+            if current not in paras:
+                paras[current] = []
+                order.append(current)
             continue
-        if verb in {"STOP", "GOBACK"} or (verb == "EXIT" and "PROGRAM" in upper_rest):
-            nid = add("end", "STOP", line)
-            link(prev, nid)
-            prev = nid
-            continue
-        if verb == "PERFORM" and re.match(r"UNTIL\b", rest, re.I):
-            cond = re.sub(r"^UNTIL\s+", "", rest, flags=re.I)
-            nid = add("loop", f"until {cond}", line)
-            link(prev, nid)
-            stack.append(("loop", nid, prev))
-            prev = nid
-            continue
-        if verb == "END-PERFORM":
-            kind_s, loop_id, _ = stack.pop() if stack and stack[-1][0] == "loop" else ("", "", None)
-            if loop_id:
-                link(prev, loop_id, "loop", "repeat")
-                prev = loop_id
-            continue
-        if verb == "IF":
-            cond = re.sub(r"\s+THEN$", "", rest, flags=re.I)
-            nid = add("decision", f"{cond}?", line)
-            prev_node = next((n for n in nodes if n["id"] == prev), None)
-            edge_kind = "no" if prev_node and prev_node.get("label") == "AT END?" else "next"
-            if stack and stack[-1][0] == "if" and prev == stack[-1][1]:
-                edge_kind = "yes"
-            elif stack and stack[-1][0] == "else" and prev == stack[-1][1]:
-                edge_kind = "no"
-            link(prev, nid, edge_kind, edge_kind if edge_kind != "next" else "")
-            stack.append(("if", nid, None))
-            prev = nid
-            continue
-        if verb == "ELSE":
-            if stack and stack[-1][0] == "if":
-                dec = stack[-1][1]
-                stack[-1] = ("else", dec, prev)
-                prev = dec
-            continue
-        if verb == "END-IF":
-            frame = stack.pop() if stack and stack[-1][0] in {"if", "else"} else None
-            if frame:
-                dec, then_end = frame[1], frame[2]
-                join = add("merge", "", line)
-                if frame[0] == "else":
-                    link(then_end, join, "next")
-                    link(prev, join, "next")
-                else:
-                    link(prev, join, "yes" if prev != dec else "next")
-                    link(dec, join, "no")
-                prev = join
-            continue
-        if verb == "CALL":
-            target = rest.strip().strip("'\"")
-            nid = add("call", f"CALL {target}", line)
-            link(prev, nid)
-            prev = nid
-            continue
-        if verb == "PERFORM" and rest and not re.match(r"UNTIL|VARYING|WITH\s+TEST", rest, re.I):
-            target = rest.split()[0]
-            nid = add("call", f"PERFORM {target}", line)
-            kind = "yes" if stack and stack[-1][0] == "if" and prev == stack[-1][1] else "next"
-            if stack and stack[-1][0] == "else" and prev == stack[-1][1]:
-                kind = "no"
-            elif stack and stack[-1][0] == "if" and prev == stack[-1][1]:
-                kind = "yes"
-            link(prev, nid, kind if kind in {"yes", "no"} else "next", kind if kind in {"yes", "no"} else "")
-            prev = nid
-            continue
-        if verb == "AT-END":
-            nid = add("decision", "AT END?", line)
-            link(prev, nid)
-            action = _flow_label("AT END", rest) if rest else "exit loop"
-            yes = add("process", action or "exit loop", line)
-            link(nid, yes, "yes", "yes")
-            loops = [s[1] for s in stack if s[0] == "loop"]
-            if loops:
-                link(yes, loops[-1], "exit", "exit")
-            prev = nid
-            continue
-        if verb in {"END-READ"}:
-            continue
+        paras[current].append((verb, rest, line))
 
-        nid = add("process", _flow_label(verb, rest), line)
-        kind = "next"
-        label = ""
-        prev_node = next((n for n in nodes if n["id"] == prev), None)
+    stack: list[tuple[str, str, str | None]] = []
+
+    def branch_kind(prev: str | None) -> tuple[str, str]:
+        kind, label = "next", ""
+        prev_node = next((n for n in nodes if n["id"] == prev), None) if prev else None
         if prev_node and prev_node.get("label") == "AT END?":
-            kind, label = "no", "no"
-        elif stack and prev == stack[-1][1]:
+            return "no", "no"
+        if stack and prev == stack[-1][1]:
             if stack[-1][0] == "if":
-                kind, label = "yes", "yes"
-            elif stack[-1][0] == "else":
-                kind, label = "no", "no"
-        link(prev, nid, kind, label)
-        prev = nid
+                return "yes", "yes"
+            if stack[-1][0] == "else":
+                return "no", "no"
+        return kind, label
 
+    def emit_block(block: list[tuple[str, str, int]], prev: str | None, inlining: set[str]) -> str | None:
+        for verb, rest, line in block:
+            upper_rest = rest.upper()
+            if verb in {"STOP", "GOBACK"} or (verb == "EXIT" and "PROGRAM" in upper_rest):
+                nid = add("end", "STOP", line)
+                k, lab = branch_kind(prev)
+                link(prev, nid, k, lab)
+                prev = nid
+                continue
+            if verb == "PERFORM" and re.match(r"UNTIL\b", rest, re.I):
+                cond = re.sub(r"^UNTIL\s+", "", rest, flags=re.I)
+                nid = add("loop", f"until {cond}", line)
+                k, lab = branch_kind(prev)
+                link(prev, nid, k, lab)
+                stack.append(("loop", nid, prev))
+                prev = nid
+                continue
+            if verb == "END-PERFORM":
+                _kind_s, loop_id, _ = stack.pop() if stack and stack[-1][0] == "loop" else ("", "", None)
+                if loop_id:
+                    link(prev, loop_id, "loop", "repeat")
+                    prev = loop_id
+                continue
+            if verb == "IF":
+                cond = re.sub(r"\s+THEN$", "", rest, flags=re.I)
+                nid = add("decision", f"{cond}?", line)
+                k, lab = branch_kind(prev)
+                link(prev, nid, k, lab)
+                stack.append(("if", nid, None))
+                prev = nid
+                continue
+            if verb == "ELSE":
+                if stack and stack[-1][0] == "if":
+                    dec = stack[-1][1]
+                    stack[-1] = ("else", dec, prev)
+                    prev = dec
+                continue
+            if verb == "END-IF":
+                frame = stack.pop() if stack and stack[-1][0] in {"if", "else"} else None
+                if frame:
+                    dec, then_end = frame[1], frame[2]
+                    join = add("merge", "", line)
+                    if frame[0] == "else":
+                        link(then_end, join, "next")
+                        link(prev, join, "next")
+                    else:
+                        link(prev, join, "yes" if prev != dec else "next")
+                        link(dec, join, "no")
+                    prev = join
+                continue
+            if verb == "CALL":
+                target = rest.strip().strip("'\"")
+                nid = add("call", f"CALL {target}", line)
+                k, lab = branch_kind(prev)
+                link(prev, nid, k, lab)
+                prev = nid
+                continue
+            if verb == "PERFORM" and rest and not re.match(r"UNTIL|VARYING|WITH\s+TEST", rest, re.I):
+                target = rest.split()[0].upper()
+                nid = add("call", f"PERFORM {target}", line)
+                k, lab = branch_kind(prev)
+                link(prev, nid, k, lab)
+                body = paras.get(target)
+                if body and target not in inlining:
+                    inlining.add(target)
+                    expanded.add(target)
+                    prev = emit_block(body, nid, inlining)
+                    inlining.discard(target)
+                else:
+                    prev = nid
+                continue
+            if verb == "AT-END":
+                nid = add("decision", "AT END?", line)
+                link(prev, nid)
+                action = _flow_label("AT END", rest) if rest else "exit loop"
+                yes = add("process", action or "exit loop", line)
+                link(nid, yes, "yes", "yes")
+                loops = [s[1] for s in stack if s[0] == "loop"]
+                if loops:
+                    link(yes, loops[-1], "exit", "exit")
+                prev = nid
+                continue
+            if verb in {"END-READ"}:
+                continue
+            nid = add("process", _flow_label(verb, rest), line)
+            k, lab = branch_kind(prev)
+            link(prev, nid, k, lab)
+            prev = nid
+        return prev
+
+    expanded: set[str] = set()
+    prev = emit_block(paras[order[0]], start, set())
+    if prev and nodes[-1]["kind"] != "end":
+        for name in order[1:]:
+            if name in expanded:
+                continue
+            prev = emit_block(paras[name], prev, set())
+            if nodes[-1]["kind"] == "end":
+                break
     if prev and nodes[-1]["kind"] != "end":
         end = add("end", "STOP", nodes[-1].get("line") or 1)
         link(prev, end)
     return nodes, edges
+
+
+_SKIP_PROCESS = re.compile(
+    r"^(DISPLAY|ACCEPT|OPEN|CLOSE|REWRITE|MOVE|AT END)\b", re.I
+)
+
+
+def compress_flowchart(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Drop I/O noise and merge joins. Keep start/decision/loop/call/end — a readable flowchart, not 50 COBOL verbs."""
+    drop = {n["id"] for n in nodes if n.get("kind") == "merge"}
+    process_ids = [n["id"] for n in nodes if n.get("kind") == "process"]
+    noisy = {n["id"] for n in nodes if n.get("kind") == "process" and _SKIP_PROCESS.match(str(n.get("label") or ""))}
+    if len(process_ids) - len(noisy) >= 1 or any(n.get("kind") in {"decision", "loop", "call"} for n in nodes):
+        drop |= noisy
+    kept = [dict(n) for n in nodes if n["id"] not in drop]
+    if len(kept) < 3:
+        kept = [dict(n) for n in nodes if n.get("kind") != "merge"]
+        drop = {n["id"] for n in nodes if n.get("kind") == "merge"}
+    ids = {n["id"] for n in kept}
+    outgoing: dict[str, list[dict]] = {}
+    for e in edges:
+        outgoing.setdefault(str(e.get("source")), []).append(e)
+
+    def resolve(nid: str, seen: set[str]) -> list[tuple[str, str, str]]:
+        found: list[tuple[str, str, str]] = []
+        for e in outgoing.get(nid, []):
+            target = str(e.get("target") or "")
+            kind = str(e.get("kind") or "next")
+            label = str(e.get("label") or "")
+            if target in ids:
+                found.append((target, kind, label))
+            elif target and target not in seen:
+                seen.add(target)
+                nested = resolve(target, seen)
+                if kind in {"yes", "no"}:
+                    found.extend((nt, kind if nk == "next" else nk, label or nlab) for nt, nk, nlab in nested)
+                else:
+                    found.extend(nested)
+        return found
+
+    new_edges: list[dict] = []
+    seen_e: set[tuple[str, str, str]] = set()
+    for n in kept:
+        for target, kind, label in resolve(n["id"], set()):
+            key = (n["id"], target, kind)
+            if key in seen_e:
+                continue
+            if target == n["id"] and kind not in {"loop"}:
+                continue
+            seen_e.add(key)
+            new_edges.append({"source": n["id"], "target": target, "kind": kind, "label": label})
+    for i, n in enumerate(kept):
+        n["seq"] = i
+    return kept, new_edges
+
+
+def estate_logic_flowchart(programs: list[dict]) -> dict:
+    """One origin flowchart from PROCEDURE logic. File paths are evidence, not swimlanes."""
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    origin_id = "origin"
+    nodes.append({"id": origin_id, "label": "origin", "kind": "start", "seq": 0, "evidence": []})
+    seq = 1
+    start_by_pid: dict[str, str] = {}
+    call_nodes: list[tuple[str, str]] = []
+
+    for index, prog in enumerate(programs):
+        local_nodes = list(prog.get("flow_nodes") or [])
+        local_edges = list(prog.get("flow_edges") or [])
+        if local_nodes:
+            local_nodes, local_edges = compress_flowchart(local_nodes, local_edges)
+        if not local_nodes:
+            continue
+        pid = (prog.get("program_id") or f"PROC-{index}").upper()
+        remap = {n["id"]: f"{index}:{n['id']}" for n in local_nodes}
+        local_start = None
+        local_end = None
+        for n in local_nodes:
+            nid = remap[n["id"]]
+            kind = n.get("kind") or "process"
+            label = n.get("label") or nid
+            if kind == "start":
+                label = pid
+                local_start = nid
+                start_by_pid[pid] = nid
+            if kind == "end":
+                local_end = nid
+            evidence = []
+            if prog.get("path") and n.get("line"):
+                evidence = [f"{prog['path']}:{n['line']}"]
+            nodes.append({
+                "id": nid,
+                "label": str(label)[:80],
+                "kind": kind,
+                "seq": seq,
+                "path": prog.get("path"),
+                "evidence": evidence,
+            })
+            seq += 1
+            if kind == "call":
+                token = str(label).split()[-1].strip("'\"").upper() if str(label).split() else ""
+                if token:
+                    call_nodes.append((nid, token))
+        for e in local_edges:
+            src, dst = remap.get(e.get("source")), remap.get(e.get("target"))
+            if src and dst:
+                edges.append({
+                    "source": src,
+                    "target": dst,
+                    "kind": e.get("kind") or "next",
+                    "label": e.get("label") or "",
+                })
+        if local_start:
+            edges.append({"source": origin_id, "target": local_start, "kind": "next", "label": ""})
+
+    for src, target_pid in call_nodes:
+        dest = start_by_pid.get(target_pid)
+        if dest and src != dest:
+            edges.append({"source": src, "target": dest, "kind": "call", "label": "CALL"})
+
+    return {"schema": 2, "generated_by": "procedure-logic", "nodes": nodes, "edges": edges}
+
 
 
 def build_graph_edges(files) -> tuple[list[dict], list[str]]:
@@ -396,6 +539,21 @@ def modules_from_groups(groups, sln: str) -> list[dict]:
     return modules
 
 
+def dedupe_business_rules(rules: list[dict]) -> list[dict]:
+    """Same BR-CALL id from several files in one module must appear once."""
+    by_id: dict[str, dict] = {}
+    for item in rules:
+        rid = str(item.get("id") or "")
+        if not rid:
+            continue
+        if rid in by_id:
+            prev = by_id[rid]
+            prev["anchors"] = list(dict.fromkeys([*(prev.get("anchors") or []), *(item.get("anchors") or [])]))
+        else:
+            by_id[rid] = dict(item)
+    return list(by_id.values())
+
+
 def draft_business_rules(struct: dict, path: str) -> list[dict]:
     rules: list[dict] = []
     for para in struct.get("paragraphs_json", [])[:12]:
@@ -455,7 +613,7 @@ def build_exploration_pack(
                 if "REDEFINES" in v.get("tags", []):
                     mod_risks.append(f"REDEFINES on {v['name']} in {f.path}")
             mod_rules.extend(draft_business_rules(struct, f.path))
-        mod["business_rules"] = mod_rules
+        mod["business_rules"] = dedupe_business_rules(mod_rules)
         mod["risks"] = sorted(set(mod_risks))
 
     path_to_module: dict[str, str] = {}
@@ -521,13 +679,22 @@ def build_exploration_pack(
     }
 
 
-RELATION_NODE_KINDS = frozenset({
-    "program", "paragraph", "data", "external",
+FLOWCHART_NODE_KINDS = frozenset({
     "start", "process", "decision", "loop", "call", "end", "merge",
 })
+RELATION_NODE_KINDS = frozenset({
+    "program", "paragraph", "data", "external",
+}) | FLOWCHART_NODE_KINDS
 RELATION_EDGE_KINDS = frozenset({
     "call", "perform", "next", "loop", "goto", "reads", "writes", "yes", "no", "exit",
 })
+
+
+def is_flowchart_graph(payload: dict | None) -> bool:
+    nodes = (payload or {}).get("nodes") or []
+    if not nodes:
+        return False
+    return all(isinstance(n, dict) and n.get("kind") in FLOWCHART_NODE_KINDS for n in nodes)
 
 
 def normalize_relation_graph(raw: dict | None) -> dict:
@@ -577,12 +744,73 @@ def normalize_relation_graph(raw: dict | None) -> dict:
             "source": source,
             "target": target,
             "kind": kind,
+            "label": str(item.get("label") or "")[:40],
             "evidence": [str(x) for x in (item.get("evidence") or []) if x][:8],
         })
     generated = payload.get("generated_by")
     return {
         "schema": 2,
-        "generated_by": generated if generated in {"agent", "deterministic_fallback"} else "agent",
+        "generated_by": generated if generated in {"agent", "deterministic_fallback", "procedure-logic"} else "agent",
         "nodes": nodes,
         "edges": edges,
     }
+
+
+def _mermaid_id(nid: str) -> str:
+    raw = re.sub(r"[^A-Za-z0-9_]", "_", str(nid))
+    if not raw or raw[0].isdigit():
+        raw = "n_" + raw
+    return raw
+
+
+def _mermaid_label(text: str) -> str:
+    cleaned = re.sub(r'["#\[\]{}]', " ", str(text or "")).strip()
+    return cleaned[:48] or "step"
+
+
+def flowchart_to_mermaid(graph: dict | None) -> str:
+    """Mermaid flowchart with pseudocode figures (diamonds, cylinders, stadiums)."""
+    nodes = (graph or {}).get("nodes") or []
+    edges = (graph or {}).get("edges") or []
+    if not nodes:
+        return "flowchart TD\n    Empty([No control flow recovered])\n"
+    lines = ["flowchart TD"]
+    for node in nodes:
+        nid = _mermaid_id(node.get("id") or "n")
+        lab = _mermaid_label(node.get("label") or node.get("id") or "step")
+        kind = node.get("kind") or "process"
+        if kind in {"start", "end"}:
+            decl = f'{nid}(["{lab}"])'
+        elif kind == "decision":
+            decl = f'{nid}{{"{lab}"}}'
+        elif kind == "loop":
+            decl = f'{nid}{{{{"{lab}"}}}}'
+        elif kind == "process":
+            decl = f'{nid}[/"{lab}"/]'
+        elif kind == "data":
+            decl = f'{nid}[("{lab}")]'
+        elif kind in {"call", "paragraph"}:
+            decl = f'{nid}[["{lab}"]]'
+        elif kind == "merge":
+            decl = f'{nid}(("{lab}"))'
+        else:
+            decl = f'{nid}["{lab}"]'
+        lines.append(f"    {decl}")
+    seen: set[tuple[str, str, str]] = set()
+    for edge in edges:
+        src = _mermaid_id(edge.get("source") or "")
+        dst = _mermaid_id(edge.get("target") or "")
+        if not src or not dst:
+            continue
+        kind = str(edge.get("kind") or "next")
+        key = (src, dst, kind)
+        if key in seen:
+            continue
+        seen.add(key)
+        label = edge.get("label") or (kind if kind != "next" else "")
+        if label:
+            lines.append(f"    {src} -->|{_mermaid_label(label)}| {dst}")
+        else:
+            lines.append(f"    {src} --> {dst}")
+    return "\n".join(lines) + "\n"
+

@@ -25,8 +25,9 @@ function ruleKind(rule: BusinessRule): { label: string; tone: 'draft' | 'agent' 
 
 function displayTitle(rule: BusinessRule): string {
   const anchor = rule.anchors[0] ?? ''
-  if (rule.id.startsWith('BR-CALL-')) {
-    const call = rule.id.replace('BR-CALL-', '')
+  const id = rule.id ?? ''
+  if (id.startsWith('BR-CALL-')) {
+    const call = id.replace('BR-CALL-', '')
     return `External call · ${call}`
   }
   if (anchor.includes(':')) {
@@ -65,7 +66,7 @@ export default function BusinessRuleCards({
               const anchor = r.anchors[0] ?? ''
               const path = anchor.includes(':') ? anchor.split(':')[0] : ''
               return (
-                <li key={r.id} className={`rule-card rule-card--${kind.tone}`}>
+                <li key={r.id ?? `${file}:${r.text}`} className={`rule-card rule-card--${kind.tone}`}>
                   <div className="rule-card-head">
                     <span className="rule-card-id mono">{r.id}</span>
                     <span className={`rule-card-badge rule-card-badge--${kind.tone}`}>{kind.label}</span>

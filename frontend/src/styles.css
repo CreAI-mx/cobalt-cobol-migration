@@ -4802,6 +4802,10 @@ button.brand-lockup:focus-visible {
 .phase-strip-dot.is-ok { background: #22c55e; }
 .phase-strip-dot.is-run { background: #8b5cf6; animation: pulse 1.2s ease infinite; }
 .phase-strip-label { font-size: 12px; font-weight: 500; }
+.phase-detail-toggle { margin: 8px 0 4px; font-size: 11px; }
+.explore-center--visual .accordion { margin: 10px 12px 14px; }
+.explore-center--visual .accordion-body { max-height: min(40vh, 360px); overflow: auto; }
+
 .module-switcher-tabs--only { margin-bottom: 10px; }
 .ben-para-meter {
   display: flex;
@@ -5035,7 +5039,7 @@ button.brand-lockup:focus-visible {
   margin-bottom: 8px;
   display: flex;
   flex-direction: column;
-  min-height: min(72vh, 820px);
+  min-height: min(52vh, 560px);
 }
 .estate-graph-toolbar, .estate-proc-head {
   display: flex;
@@ -5043,10 +5047,30 @@ button.brand-lockup:focus-visible {
   gap: 8px;
   padding: 10px 14px;
   border-bottom: 1px solid #334155;
-  align-items: baseline;
+  align-items: center;
   flex-shrink: 0;
+  flex-wrap: wrap;
 }
 .estate-graph-title { font-weight: 600; color: #f8fafc; font-size: 13px; }
+.estate-zoom {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.estate-zoom-btn {
+  min-width: 28px;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid #475569;
+  border-radius: 6px;
+  background: #1e293b;
+  color: #e2e8f0;
+  font-size: 12px;
+  cursor: pointer;
+}
+.estate-zoom-btn:hover { border-color: #94a3b8; }
+.estate-zoom-pct { color: #94a3b8; font-size: 11px; min-width: 40px; text-align: center; }
 .estate-graph-viewport {
   flex: 1 1 auto;
   min-height: 480px;
@@ -5058,18 +5082,38 @@ button.brand-lockup:focus-visible {
 }
 .estate-graph-viewport:active { cursor: grabbing; }
 .estate-graph-viewport--flow {
+  position: relative;
   min-height: 560px;
-  height: min(72vh, 760px);
-  overflow: auto;
-  cursor: default;
+  height: min(68vh, 720px);
+  overflow: hidden;
+  cursor: grab;
 }
-.estate-graph-viewport--flow .estate-graph-svg {
-  width: 100%;
+.estate-graph-viewport--flow .estate-graph-svg,
+.estate-graph-svg--zoom {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: auto;
   height: auto;
+  max-width: none;
+  display: block;
+  transform-origin: 0 0;
+  will-change: transform;
 }
 .flow-box { fill: #1e293b; stroke: #64748b; stroke-width: 1.4; }
 .flow-box.is-start, .flow-box.is-end { fill: #14532d; stroke: #22c55e; }
 .flow-box.is-call { fill: #312e81; stroke: #a78bfa; }
+.flow-box.is-program { fill: #312e81; stroke: #a78bfa; }
+.flow-box.is-paragraph { fill: #0c4a6e; stroke: #38bdf8; }
+.flow-box.is-data { fill: #422006; stroke: #fbbf24; }
+.flow-box.is-external { fill: #111827; stroke: #64748b; stroke-dasharray: 4 3; }
+.flow-box.is-process { fill: #1e293b; stroke: #64748b; }
+.flow-edge.is-call { stroke: #a78bfa; }
+.estate-legend-swatch.flow-box { display: inline-block; width: 10px; height: 10px; border-radius: 2px; border: 1px solid currentColor; vertical-align: middle; margin-right: 4px; }
+.estate-graph-legend { color: #94a3b8; align-items: center; flex-wrap: wrap; }
+.flow-process { fill: #1e293b; stroke: #94a3b8; stroke-width: 1.5; }
+.flow-data { fill: #422006; stroke: #fbbf24; stroke-width: 1.5; }
+.flow-call-bar { stroke: #c4b5fd; stroke-width: 2; }
 .flow-decision { fill: #1e293b; stroke: #38bdf8; stroke-width: 1.5; }
 .flow-loop { fill: #1e1b4b; stroke: #c4b5fd; stroke-width: 1.6; }
 .flow-merge { fill: #64748b; stroke: #94a3b8; }
@@ -5081,6 +5125,8 @@ button.brand-lockup:focus-visible {
 .flow-edge-label { fill: #94a3b8; font-size: 9px; font-family: var(--font-mono); }
 .estate-graph-svg {
   display: block;
+}
+.estate-graph-svg:not(.estate-graph-svg--zoom) {
   width: 100%;
   height: 100%;
 }
