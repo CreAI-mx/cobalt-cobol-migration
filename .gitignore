@@ -19,6 +19,7 @@ migration-state/migration.db
 migration-state/migration.db-journal
 migration-state/migration.db-wal
 migration-state/migration.db-shm
+migration-state/.backend.pid
 
 # Editor / tool state
 .vscode/

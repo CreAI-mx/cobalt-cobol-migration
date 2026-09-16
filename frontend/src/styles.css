@@ -1346,6 +1346,50 @@ button.brand-lockup:focus-visible {
   margin-top: 1px;
 }
 
+
+.feed-log-block {
+  margin-top: 2px;
+  min-width: 0;
+}
+
+.feed-log-pre {
+  margin: 0;
+  padding: 8px 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: #f8fafc;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--fg);
+  max-height: min(42vh, 360px);
+  overflow: auto;
+}
+
+.feed-log-block.icon-blocked .feed-log-pre {
+  border-color: color-mix(in srgb, var(--destructive) 35%, var(--border));
+  background: var(--destructive-soft);
+}
+
+.feed-log-toggle {
+  margin-top: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: var(--font-ui);
+}
+
+.feed-log-toggle:hover {
+  text-decoration: underline;
+}
+
+
 .feed-row .detail {
   display: block;
   color: var(--muted-fg);
@@ -1523,8 +1567,8 @@ button.brand-lockup:focus-visible {
   grid-area: estate;
   display: flex;
   flex-direction: column;
-  max-height: none;
-  min-height: 62vh;
+  max-height: min(68vh, 720px);
+  min-height: 42vh;
   min-width: 0;
   overflow: hidden;
   padding: 20px;
@@ -1757,6 +1801,19 @@ button.brand-lockup:focus-visible {
 
 .phase-rail .timeline-item.is-running {
   background: rgba(139, 92, 246, 0.16);
+}
+
+.timeline-item-jump {
+  cursor: pointer;
+}
+
+.timeline-item-jump:hover {
+  background: var(--hover-bg);
+}
+
+.timeline-item-jump:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .phase-rail .timeline-item.is-blocked {
@@ -3470,8 +3527,12 @@ button.brand-lockup:focus-visible {
   overflow: visible;
 }
 
+.step5-below-estate {
+  margin-top: 16px;
+}
+
 .agent-stack {
-  margin-top: 8px;
+  margin-top: 0;
 }
 .agent-stack .parity-console.pane {
   max-height: none;

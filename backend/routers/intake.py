@@ -378,6 +378,25 @@ async def get_source_file(run_id: str, path: str):
     )
 
 
+
+def _generated_file_by_suffix(run_id: str, path: str) -> tuple[Path, str] | None:
+    """Last resort: locate by filename + relative suffix under any generated root."""
+    rel = Path(path).as_posix().replace("\\", "/").lstrip("/")
+    name = Path(path).name
+    if not name:
+        return None
+    for base in _generated_search_bases(run_id):
+        if not base.is_dir():
+            continue
+        for hit in base.rglob(name):
+            if not hit.is_file():
+                continue
+            rel_hit = hit.relative_to(base).as_posix()
+            if rel_hit == rel or rel.endswith(rel_hit) or rel_hit.endswith(rel):
+                return hit, rel_hit
+    return None
+
+
 @router.get("/{run_id}/generated-file", response_model=SourceFileView)
 async def get_generated_file(run_id: str, path: str):
     """Real generated-C# preview — reads whatever Phase 4/5 actually wrote to
@@ -393,6 +412,15 @@ async def get_generated_file(run_id: str, path: str):
                 if exc.status_code != 404:
                     raise
                 last_err = exc
+    hit = _generated_file_by_suffix(run_id, path)
+    if hit:
+        file_path, rel_hit = hit
+        for base in _generated_search_bases(run_id):
+            try:
+                if file_path.resolve().is_relative_to(base.resolve()):
+                    return _read_file_under(base, run_id, rel_hit, "No generated output found")
+            except (ValueError, OSError):
+                continue
     if last_err:
         raise last_err
     raise HTTPException(404, f"No generated output found for run_id={run_id}")

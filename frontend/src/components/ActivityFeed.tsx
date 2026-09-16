@@ -37,6 +37,71 @@ function statusIcon(status: PhaseStatus | string, agentic: boolean, live: boolea
   return <DashIcon className="icon icon-skip" />
 }
 
+
+
+const LOG_PREVIEW_LINES = 4
+
+/** Build/test logs — preview head, expand for full output. Step5 ActivityFeed. */
+function FeedLogDetail({
+  text,
+  status,
+  className = '',
+}: {
+  text: string
+  status?: string
+  className?: string
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const trimmed = text.trim()
+  if (!trimmed) return null
+
+  const lines = trimmed.split(/\r?\n/)
+  const isMultiline = lines.length > 1
+  const needsToggle =
+    lines.length > LOG_PREVIEW_LINES || trimmed.length > 220 || isMultiline
+
+  let preview = trimmed
+  if (!expanded && needsToggle) {
+    preview = lines.slice(0, LOG_PREVIEW_LINES).join('\n')
+    if (lines.length > LOG_PREVIEW_LINES)
+      preview += '\n…'
+  }
+
+  const statusTag =
+    status && !/^OK|DONE|PASSED$/i.test(status) ? `[${status}] ` : ''
+
+  if (!needsToggle) {
+    return (
+      <span className={`detail ${className}`}>
+        {statusTag}
+        {trimmed}
+      </span>
+    )
+  }
+
+  return (
+    <div className={`feed-log-block ${className}`}>
+      <pre className="feed-log-pre" aria-label={statusTag ? `Log ${status}` : 'Log'}>
+        {expanded ? trimmed : preview}
+      </pre>
+      <button
+        type="button"
+        className="feed-log-toggle"
+        onClick={(ev) => {
+          ev.stopPropagation()
+          setExpanded((v) => !v)
+        }}
+      >
+        {expanded
+          ? 'Compactar log'
+          : lines.length > LOG_PREVIEW_LINES
+            ? `Ver log completo (${lines.length} líneas)`
+            : 'Ver log completo'}
+      </button>
+    </div>
+  )
+}
+
 function formatTokens(n: number): string {
   return n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n)
 }
@@ -125,7 +190,7 @@ export default function ActivityFeed({ events, currentPhase, cost, archAction, l
               <div className="feed-group-header-main">
                 {statusIcon(status, meta.agentic, live)}
                 <span className="label">
-                  {meta.label}
+                  {meta.railTitle ?? meta.label}
                   <span className="feed-phase-id" aria-hidden="true">
                     {' · '}
                     {meta.id}
@@ -167,7 +232,11 @@ export default function ActivityFeed({ events, currentPhase, cost, archAction, l
                         {statusIcon(e.status, agentic, live)}
                         <div className="feed-row-body">
                           <span className="label">{e.file_path}</span>
-                          <span className="detail">{e.detail}</span>
+                          <FeedLogDetail
+                            text={e.detail}
+                            status={e.status}
+                            className={e.status === 'FAILED' || e.status === 'BLOCKED' ? 'icon-blocked' : ''}
+                          />
                         </div>
                       </div>
                     )
@@ -197,9 +266,15 @@ export default function ActivityFeed({ events, currentPhase, cost, archAction, l
                       )}
                       <div className="feed-row-body">
                         <span className="label">{label}</span>
-                        <span className={`detail ${e.status === 'BLOCKED' ? 'icon-blocked' : ''}`}>
-                          [{waitingRow ? 'WAITING' : e.status}] {e.detail}
-                        </span>
+                        <FeedLogDetail
+                          text={e.detail}
+                          status={waitingRow ? 'WAITING' : e.status}
+                          className={
+                            e.status === 'BLOCKED' || String(e.status) === 'FAILED'
+                              ? 'icon-blocked'
+                              : ''
+                          }
+                        />
                       </div>
                     </div>
                   )

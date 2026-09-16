@@ -179,8 +179,14 @@ export default function Step5Migrate() {
         </section>
       </div>
 
-      {runId && !live && (
-        <AgentStackSurface runId={runId} disabled={live} allowAgentRerun={Boolean(runId)} />
+      {runId && (
+        <div className="step5-below-estate">
+          <AgentStackSurface
+            runId={runId}
+            disabled={live}
+            allowAgentRerun={!live}
+          />
+        </div>
       )}
     </div>
   )

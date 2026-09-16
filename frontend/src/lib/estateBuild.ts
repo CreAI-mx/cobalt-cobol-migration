@@ -35,6 +35,7 @@ const FILE_TAG_PHASES = new Set([
   'Building',
   'Repairing',
   'Testing',
+  'Parity Validation',
   'Documenting',
 ])
 
@@ -307,9 +308,9 @@ export interface PlanBuildTagsOptions {
 
 function runIsComplete(options?: PlanBuildTagsOptions): boolean {
   if (options?.live) return false
+  if (options?.runStatus === 'FAILED' || options?.runStatus === 'ABORTED') return false
   if (options?.runStatus === 'PASSED') return true
   if (options?.planStage === 'completed') return true
-  if (options?.finishedAt) return true
   const testing = options?.phaseMap?.get('Testing')
   const documenting = options?.phaseMap?.get('Documenting')
   if (testing?.status === 'OK' && documenting?.status === 'OK') return true

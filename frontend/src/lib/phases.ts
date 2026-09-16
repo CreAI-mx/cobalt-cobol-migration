@@ -7,6 +7,8 @@ export interface PhaseMeta {
   label: string
   agentic: boolean
   runningLabel?: string
+  railTitle?: string
+  scrollTargetId?: string
 }
 
 export const PHASES: PhaseMeta[] = [
@@ -15,6 +17,15 @@ export const PHASES: PhaseMeta[] = [
   { id: 'Building', skill: 'dotnet-build', label: 'Build', agentic: false },
   { id: 'Repairing', skill: 'bugfix-loop', label: 'Repair', agentic: true, runningLabel: 'Fixing compile errors…' },
   { id: 'Testing', skill: 'dotnet-test', label: 'Test', agentic: false },
+  {
+    id: 'Parity Validation',
+    skill: 'parity-validation',
+    label: 'Compare',
+    railTitle: 'Comparativa · Original vs migrado',
+    scrollTargetId: 'parity-console-title',
+    agentic: false,
+    runningLabel: 'COBOL oracle vs C# migrado (mismo fixture)…',
+  },
   { id: 'Documenting', skill: 'migration-docs', label: 'Docs', agentic: true, runningLabel: 'Writing README + MIGRATION…' },
 ]
 
@@ -32,6 +43,7 @@ const FOREMAN_ORDER = [
   'Building',
   'Repairing',
   'Testing',
+  'Parity Validation',
   'Documenting',
 ] as const
 
@@ -62,6 +74,7 @@ export function isPhaseSettled(id: string, phaseMap: Map<string, PhaseEvent>): b
       phaseMap.get('Generating')?.status === 'OK' ||
       phaseMap.get('Building')?.status === 'OK' ||
       phaseMap.get('Testing')?.status === 'OK' ||
+      phaseMap.get('Parity Validation')?.status === 'OK' ||
       phaseMap.get('Documenting')?.status === 'OK'
     )
   }

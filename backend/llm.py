@@ -43,6 +43,13 @@ class ConversionResult:
 # should set CLAUDE_BIN instead of relying on a dev machine's location.
 _CLAUDE_FALLBACKS = ["/home/frg/.local/bin/claude"]
 
+# The headless `claude -p` subprocess needs a HOME with an authenticated
+# Claude Code session. Default to this process's own HOME (works out of the
+# box on any machine where `claude` is already logged in); set
+# CLAUDE_HEADLESS_HOME to point headless calls at a different profile
+# (e.g. a dedicated low-rate-limit account) without touching this file.
+_HEADLESS_HOME = os.environ.get("CLAUDE_HEADLESS_HOME") or os.environ.get("HOME", "")
+
 # Real defect found and fixed 2026-09-15: prompts cited ".claude/skills/X/SKILL.md"
 # by name, but headless subprocess cwd was always the OUTPUT dir (target_dir/out_dir,
 # under migration-state/runs/), never the repo root, and --add-dir only granted that
@@ -147,7 +154,7 @@ async def plan_manifest(prompt: str, source_dir: Path,
         "--add-dir", str(source_dir),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        env={**os.environ, "HOME": "/home/frg/.claudeshp2_profile", "ECC_GATEGUARD": "off"},
+        env={**os.environ, "HOME": _HEADLESS_HOME, "ECC_GATEGUARD": "off"},
         cwd=str(source_dir),
     )
     try:
@@ -296,7 +303,7 @@ async def convert_work_item(
         "--add-dir", str(_skill_path(skill_name).parent),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        env={**os.environ, "HOME": "/home/frg/.claudeshp2_profile", "ECC_GATEGUARD": "off"},
+        env={**os.environ, "HOME": _HEADLESS_HOME, "ECC_GATEGUARD": "off"},
         cwd=str(out_dir),
     )
     envelope: dict | None = None
@@ -367,6 +374,19 @@ async def convert_work_item(
 
 _REPAIR_PROMPT = """dotnet build failed on this C# solution. Fix ONLY compile errors.
 Do not add README files. Do not invent new projects.
+
+A recurring real cause of CS0234 ("type or namespace name X does not exist in
+the namespace Y") in this codebase: a `using Alias = Some.Real.Namespace;`
+directive whose alias name (e.g. `Infrastructure`) collides with an actual
+namespace SEGMENT already reachable from the file's own namespace (e.g. the
+file is in `CobolBankingSystems.Cli` and a sibling namespace
+`CobolBankingSystems.Infrastructure` exists) — the compiler can resolve the
+bare identifier to the real namespace instead of the intended alias, so a
+type one level deeper (e.g. `Infrastructure.Persistence.Foo`) is "not found".
+If you see this pattern, rename the alias to something that cannot collide
+(e.g. `Persistence` instead of `Infrastructure`) and update every reference
+in that file — do not just re-add a `using` for the real namespace, that
+does not fix the ambiguity.
 
 Build output:
 {errors}
@@ -452,7 +472,7 @@ async def repair_csharp(target_dir: Path, errors: str, timeout_s: int = _TIMEOUT
         "--add-dir", str(target_dir),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        env={**os.environ, "HOME": "/home/frg/.claudeshp2_profile", "ECC_GATEGUARD": "off"},
+        env={**os.environ, "HOME": _HEADLESS_HOME, "ECC_GATEGUARD": "off"},
         cwd=str(target_dir),
     )
     envelope: dict | None = None
@@ -550,7 +570,7 @@ async def write_mvp_docs(target_dir: Path, timeout_s: int = _TIMEOUT_S,
         "--add-dir", str(target_dir),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        env={**os.environ, "HOME": "/home/frg/.claudeshp2_profile", "ECC_GATEGUARD": "off"},
+        env={**os.environ, "HOME": _HEADLESS_HOME, "ECC_GATEGUARD": "off"},
         cwd=str(target_dir),
     )
     envelope: dict | None = None

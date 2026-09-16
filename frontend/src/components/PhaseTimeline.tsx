@@ -49,7 +49,7 @@ export default function PhaseTimeline({ phaseMap, archAction, live = false }: Pr
           ? 'pending'
           : waiting
             ? 'waiting for accept'
-            : running && meta.agentic && meta.runningLabel
+            : running && meta.runningLabel
               ? meta.runningLabel
               : ev.status.toLowerCase()
 
@@ -62,13 +62,33 @@ export default function PhaseTimeline({ phaseMap, archAction, live = false }: Pr
           .filter(Boolean)
           .join(' ')
 
+        const jumpToParity = () => {
+          if (!meta.scrollTargetId) return
+          document.getElementById(meta.scrollTargetId)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        }
+
         return (
-          <li key={meta.id} className={itemClass}>
+          <li
+            key={meta.id}
+            className={`${itemClass}${meta.scrollTargetId ? ' timeline-item-jump' : ''}`}
+            onClick={meta.scrollTargetId ? jumpToParity : undefined}
+            onKeyDown={
+              meta.scrollTargetId
+                ? (e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault()
+                      jumpToParity()
+                    }
+                  }
+                : undefined
+            }
+            role={meta.scrollTargetId ? 'button' : undefined}
+            tabIndex={meta.scrollTargetId ? 0 : undefined}
+            title={meta.scrollTargetId ? 'Ir al sandbox COBOL vs C# (Parity)' : undefined}
+          >
             <span className={iconClass}>{icon}</span>
             <div className="timeline-body">
-              <div className="name">
-                {meta.id} · {meta.label}
-              </div>
+              <div className="name">{meta.railTitle ?? `${meta.id} · ${meta.label}`}</div>
               <div className="skill">{meta.skill}</div>
               <div
                 className={`status-line ${ev ? ev.status.toLowerCase() : ''}`}
