@@ -1,0 +1,34 @@
+# Python
+backend/.venv/
+backend/__pycache__/
+backend/**/__pycache__/
+backend/.pytest_cache/
+backend/.ruff_cache/
+*.pyc
+backend/uvicorn.log
+
+# Node / frontend
+frontend/node_modules/
+frontend/dist/
+frontend/test-results/
+frontend/.vite/
+
+# Generated run artifacts (regenerated per migration run, not source)
+migration-state/runs/
+migration-state/migration.db
+migration-state/migration.db-journal
+migration-state/migration.db-wal
+migration-state/migration.db-shm
+
+# Editor / tool state
+.vscode/
+.agents/
+.kilo/
+skills-lock.json
+
+# OS
+.DS_Store
+
+# Backups made during this session's real bug fixes
+raw/*.bak
+raw/*.bak2

@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>COBOL Migration Intake</title>
+<style>
+  /* Minimalism & Swiss Style, Apple-inflected: monochrome base, single accent,
+     generous whitespace, no decoration without function. System font stack —
+     no webfont fetch, one less network dependency, matches "lo mas facil." */
+  :root {
+    --bg: #ffffff; --fg: #111111; --dim: #6e6e73; --line: #e5e5e5;
+    --accent: #0071e3; --ok: #1d7a3c; --err: #d70015; --warn: #b25000;
+    --space-1: 0.5rem; --space-2: 1rem; --space-3: 1.5rem; --space-4: 2.5rem; --space-5: 4rem;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #000000; --fg: #f5f5f7; --dim: #8e8e93; --line: #2c2c2e; --accent: #2997ff; }
+  }
+  * { box-sizing: border-box; }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
+  }
+  body {
+    background: var(--bg); color: var(--fg); margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    padding: var(--space-5) var(--space-3);
+    -webkit-font-smoothing: antialiased;
+  }
+  main { max-width: 840px; margin: 0 auto; }
+  header { margin-bottom: var(--space-5); }
+  h1 {
+    font-size: 1.5rem; font-weight: 600; letter-spacing: -0.01em; margin: 0 0 var(--space-1);
+  }
+  header p { margin: 0; color: var(--dim); font-size: 0.95rem; }
+  header a { color: var(--accent); text-decoration: none; }
+  header a:hover { text-decoration: underline; }
+  section { margin-bottom: var(--space-5); }
+  section h2 {
+    font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--dim); margin: 0 0 var(--space-2); border-bottom: 1px solid var(--line);
+    padding-bottom: var(--space-1);
+  }
+
+  #dropzone {
+    border: 1px dashed var(--line); border-radius: 12px; padding: var(--space-4);
+    text-align: center; color: var(--dim); cursor: pointer;
+    transition: border-color 200ms ease, background-color 200ms ease;
+    min-height: 44px; display: flex; flex-direction: column; align-items: center; gap: var(--space-2);
+  }
+  #dropzone:hover { border-color: var(--fg); }
+  #dropzone.drag { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, transparent); color: var(--accent); }
+  #dropzone svg { width: 28px; height: 28px; stroke: currentColor; opacity: 0.7; }
+  #dropzone span { font-size: 0.9rem; }
+
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+
+  #summary { min-height: 1.2rem; font-size: 0.85rem; color: var(--dim); margin-top: var(--space-2); }
+  #summary strong { color: var(--fg); font-weight: 600; }
+  #summary code { font-family: ui-monospace, Menlo, monospace; font-size: 0.8rem; }
+
+  #runBtn {
+    display: none; align-items: center; gap: var(--space-1);
+    background: var(--accent); color: #fff; border: none; border-radius: 8px;
+    padding: 0.6rem 1.1rem; font-size: 0.9rem; font-weight: 500;
+    cursor: pointer; margin-top: var(--space-3);
+    transition: opacity 150ms ease, transform 100ms ease;
+    min-height: 44px;
+  }
+  #runBtn:hover { opacity: 0.85; }
+  #runBtn:active { transform: scale(0.98); }
+  #runBtn:disabled { opacity: 0.4; cursor: default; }
+
+  #tree { font-size: 0.9rem; }
+  #tree ul { list-style: none; margin: 0; padding-left: var(--space-3); }
+  #tree > ul { padding-left: 0; }
+  #tree li { display: flex; align-items: center; gap: var(--space-1); padding: 3px 0; }
+  #tree svg { width: 15px; height: 15px; flex-shrink: 0; opacity: 0.6; }
+  .dir { font-weight: 500; }
+  .cobol-name { color: var(--accent); }
+  .badge {
+    font-size: 0.65rem; font-weight: 600; letter-spacing: 0.03em; color: var(--dim);
+    border: 1px solid var(--line); border-radius: 4px; padding: 0 5px;
+  }
+  .empty-hint { color: var(--dim); font-size: 0.9rem; font-style: normal; }
+
+  #log { font-size: 0.85rem; }
+  .phase-row {
+    display: grid; grid-template-columns: 5rem 1fr auto; gap: var(--space-2);
+    align-items: baseline; padding: 7px 0; border-bottom: 1px solid var(--line);
+  }
+  .phase-row:last-child { border-bottom: none; }
+  .phase-num { color: var(--dim); font-size: 0.8rem; }
+  .phase-detail { color: var(--dim); }
+  .status-tag { font-weight: 600; font-size: 0.8rem; }
+  .status-OK { color: var(--ok); }
+  .status-BLOCKED { color: var(--err); }
+  .status-SKIPPED { color: var(--warn); }
+
+  .note {
+    font-size: 0.85rem; color: var(--dim); border-top: 1px solid var(--line);
+    padding-top: var(--space-2); margin-top: var(--space-2);
+  }
+  .note code { font-family: ui-monospace, Menlo, monospace; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>COBOL to C# Migration</h1>
+    <p>No approval gate this run — every phase fires automatically. Agents can drive the same pipeline via <a href="/docs">the API</a> instead of this page.</p>
+  </header>
+
+  <section aria-labelledby="intake-h">
+    <h2 id="intake-h">Source</h2>
+    <div id="dropzone" tabindex="0" role="button" aria-label="Upload a zip file of COBOL source code">
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3v12m0-12 4 4m-4-4-4 4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span>Drop a .zip of COBOL source, or click to choose one</span>
+    </div>
+    <input type="file" id="fileInput" accept=".zip" style="display:none" aria-hidden="true">
+    <div id="summary" role="status" aria-live="polite"></div>
+    <button id="runBtn" type="button">Run pipeline</button>
+  </section>
+
+  <section aria-labelledby="tree-h" id="tree-section" style="display:none">
+    <h2 id="tree-h">Tree</h2>
+    <div id="tree" role="tree" aria-label="Uploaded source tree"></div>
+  </section>
+
+  <section aria-labelledby="progress-h" id="progress-section" style="display:none">
+    <h2 id="progress-h">Progress</h2>
+    <div id="log" role="log" aria-live="polite" aria-label="Migration pipeline phase status"></div>
+    <p class="note" id="blockedNote" style="display:none">
+      Phase 6 needs <code>cobc</code> and <code>dotnet</code> installed on this host to verify real parity — see status above.
+    </p>
+  </section>
+</main>
+
+<script>
+const ICON_DIR  = '<svg viewBox="0 0 24 24" fill="none"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" stroke-width="1.5" stroke-linejoin="round"/></svg>';
+const ICON_FILE = '<svg viewBox="0 0 24 24" fill="none"><path d="M6 2h9l5 5v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z" stroke-width="1.5" stroke-linejoin="round"/></svg>';
+const ICON_COBOL = '<svg viewBox="0 0 24 24" fill="none"><path d="M6 2h9l5 5v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z" stroke-width="1.5" stroke-linejoin="round"/><path d="M9 13h6M9 16h4" stroke-width="1.5" stroke-linecap="round"/></svg>';
+
+const dz = document.getElementById('dropzone');
+const fi = document.getElementById('fileInput');
+const runBtn = document.getElementById('runBtn');
+const treeSection = document.getElementById('tree-section');
+const progressSection = document.getElementById('progress-section');
+let currentRunId = null;
+
+dz.addEventListener('click', () => fi.click());
+dz.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fi.click(); } });
+dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag'); });
+dz.addEventListener('dragleave', () => dz.classList.remove('drag'));
+dz.addEventListener('drop', e => { e.preventDefault(); dz.classList.remove('drag'); if (e.dataTransfer.files[0]) upload(e.dataTransfer.files[0]); });
+fi.addEventListener('change', e => { if (e.target.files[0]) upload(e.target.files[0]); });
+
+function renderTree(node, depth = 0) {
+  const isDir = node.type === 'dir';
+  const icon = isDir ? ICON_DIR : (node.is_cobol ? ICON_COBOL : ICON_FILE);
+  const nameClass = isDir ? 'dir' : (node.is_cobol ? 'cobol-name' : '');
+  let html = `<li role="treeitem" aria-level="${depth + 1}">${icon}<span class="${nameClass}">${node.name}</span>` +
+    (node.is_cobol ? `<span class="badge">COBOL</span>` : '') + `</li>`;
+  if (node.children && node.children.length) {
+    html += '<ul role="group">' + node.children.map(c => renderTree(c, depth + 1)).join('') + '</ul>';
+  }
+  return html;
+}
+
+async function upload(file) {
+  document.getElementById('summary').textContent = 'Uploading…';
+  const fd = new FormData();
+  fd.append('file', file);
+  const res = await fetch('/migration/intake', { method: 'POST', body: fd });
+  if (!res.ok) {
+    document.getElementById('summary').innerHTML = `<span style="color:var(--err)">${await res.text()}</span>`;
+    return;
+  }
+  const data = await res.json();
+  currentRunId = data.run_id;
+  document.getElementById('summary').innerHTML =
+    `<strong>${data.total_files}</strong> files &middot; <strong>${data.cobol_files}</strong> COBOL &middot; <code>${data.run_id}</code>`;
+  treeSection.style.display = 'block';
+  document.getElementById('tree').innerHTML = '<ul role="group">' + renderTree(data.tree) + '</ul>';
+  runBtn.style.display = 'inline-flex';
+}
+
+runBtn.addEventListener('click', async () => {
+  if (!currentRunId) return;
+  runBtn.disabled = true;
+  progressSection.style.display = 'block';
+  const log = document.getElementById('log');
+  log.innerHTML = '';
+  document.getElementById('blockedNote').style.display = 'none';
+  const es = new EventSource(`/migration/${currentRunId}/events`);
+  es.onmessage = ev => {
+    const p = JSON.parse(ev.data);
+    log.innerHTML += `<div class="phase-row"><span class="phase-num">${p.phase}</span>` +
+      `<span>${p.skill}<br><span class="phase-detail">${p.detail}</span></span>` +
+      `<span class="status-tag status-${p.status}">${p.status}</span></div>`;
+    if (p.status === 'BLOCKED') document.getElementById('blockedNote').style.display = 'block';
+  };
+  es.onerror = () => es.close();
+  await fetch(`/migration/${currentRunId}/start`, { method: 'POST' });
+  runBtn.disabled = false;
+});
+</script>
+</body>
+</html>
