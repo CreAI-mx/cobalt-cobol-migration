@@ -71,10 +71,13 @@ Code CLI session; there is no shared/bundled credential.
    claude   # run once, follow the login flow, then exit
    ```
 2. Confirm the backend can find the binary — `find_claude()` checks, in
-   order: the `CLAUDE_BIN` env var, then `claude` on `PATH`, then
-   `~/.local/bin/claude`. If `which claude` doesn't resolve after install,
-   set `CLAUDE_BIN=/full/path/to/claude` in your `.env` (repo root) rather
-   than editing code.
+   order: the `CLAUDE_BIN` env var, then `claude` on `PATH`, then a hardcoded
+   dev-machine fallback path that will NOT exist on your machine (it is
+   specific to the original author's setup — do not rely on it). If `which
+   claude` doesn't resolve after install, you MUST set
+   `CLAUDE_BIN=/full/path/to/claude` in your `.env` (repo root) — without
+   either PATH or CLAUDE_BIN, every headless call fails with "claude CLI not
+   found", not a silent fallback to anyone else's binary.
 3. Headless calls run under `HOME` (or `CLAUDE_HEADLESS_HOME` if you want to
    point them at a different, already-logged-in profile — e.g. a dedicated
    low-rate-limit account, useful if you also use `claude` interactively for
