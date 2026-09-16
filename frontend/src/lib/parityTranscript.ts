@@ -1,4 +1,4 @@
-/** Parse ACCOUNT LOOKUP console transcripts from parity sandbox stdout. */
+/** Parse parity sandbox stdout — structured when output matches known patterns, else line diff. */
 
 export interface ParityTranscript {
   outcome: 'found' | 'not_found' | null
@@ -20,7 +20,24 @@ export interface ParityFieldDiff {
 export interface ParityComparison {
   output_equal: boolean
   display_equal: boolean
+  mode?: 'structured' | 'lines'
   diffs: ParityFieldDiff[]
+}
+
+const MAX_LINE_ROWS = 40
+
+export function normalizeStdout(text: string): string {
+  const lines = text.replace(/\r\n/g, '\n').split('\n')
+  return lines.map((l) => l.replace(/\s+$/, '')).join('\n').replace(/\n+$/, '')
+}
+
+export function meaningfulOutputLines(stdout: string): string[] {
+  const norm = normalizeStdout(stdout)
+  const lines = norm
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l && !l.startsWith('#') && !/^\$\s/.test(l))
+  return lines.length > 0 ? lines : norm.trim() ? [norm.trim()] : []
 }
 
 export function parseParityTranscript(stdout: string): ParityTranscript {
@@ -60,9 +77,6 @@ function parseBalanceValue(raw: string | null): number | null {
   return Number.isFinite(n) ? n : null
 }
 
-/** Client-side comparison when API omits comparison (single-side runs). */
-
-/** Human-readable console excerpt for side-by-side compare UI. */
 export function formatOutputPreview(stdout: string, tx: ParityTranscript): string {
   if (tx.outcome === 'found') {
     const lines = ['ACCOUNT FOUND:']
@@ -71,12 +85,9 @@ export function formatOutputPreview(stdout: string, tx: ParityTranscript): strin
     return lines.join('\n')
   }
   if (tx.outcome === 'not_found') return 'ACCOUNT NOT FOUND.'
-  const tail = stdout
-    .split('\n')
-    .map((l) => l.trim())
-    .filter((l) => l && !l.startsWith('#'))
-    .slice(-6)
-  return tail.length > 0 ? tail.join('\n') : '(no parseable output)'
+  const lines = meaningfulOutputLines(stdout)
+  if (lines.length > 0) return lines.slice(-12).join('\n')
+  return '(no output)'
 }
 
 export function comparisonSimilarityPct(comparison: ParityComparison): number {
@@ -99,13 +110,13 @@ export function compareParityTranscripts(cobol: ParityTranscript, csharp: Parity
   const diffs: ParityFieldDiff[] = [
     {
       field: 'outcome',
-      label: 'Outcome',
+      label: 'Outcome (FOUND / NOT FOUND)',
       equal: outcomeEq,
       cobol: outcomeLabel(cobol) ?? '—',
       csharp: outcomeLabel(csharp) ?? '—',
       fix_hint: outcomeEq
         ? null
-        : 'Fix lookup logic de búsqueda en Handler/CLI C# vs COBOL READ/PERFORM.',
+        : 'Fix migrated CLI behavior to match legacy COBOL for the same fixture input.',
     },
     {
       field: 'name',
@@ -113,7 +124,7 @@ export function compareParityTranscripts(cobol: ParityTranscript, csharp: Parity
       equal: nameEq,
       cobol: cobol.name ?? '—',
       csharp: csharp.name ?? '—',
-      fix_hint: nameEq ? null : 'Check name width (30) y Trim en lectura de accounts.dat.',
+      fix_hint: nameEq ? null : 'Check record layout, field width, and Trim when reading fixture data.',
     },
     {
       field: 'balance',
@@ -126,8 +137,8 @@ export function compareParityTranscripts(cobol: ParityTranscript, csharp: Parity
       fix_hint: balanceEq
         ? null
         : !balanceValueEq && cbVal !== null && csVal !== null
-          ? `Numeric value differs (~${cbVal} vs ~${csVal}). Revisar PIC y parseo decimal.`
-          : 'Format BALANCE in Program.cs to match COBOL DISPLAY (+0000010.00).',
+          ? `Numeric value differs (~${cbVal} vs ~${csVal}). Review PIC and decimal parsing.`
+          : 'Match DISPLAY/formatting in the migrated CLI to legacy COBOL output.',
     },
   ]
 
@@ -135,8 +146,61 @@ export function compareParityTranscripts(cobol: ParityTranscript, csharp: Parity
   return {
     output_equal,
     display_equal: output_equal && balanceDisplayEq,
+    mode: 'structured',
     diffs,
   }
+}
+
+export function compareStdoutLines(cobStdout: string, csStdout: string): ParityComparison {
+  const cobNorm = normalizeStdout(cobStdout)
+  const csNorm = normalizeStdout(csStdout)
+  const output_equal = cobNorm === csNorm
+
+  const cl = meaningfulOutputLines(cobStdout)
+  const csl = meaningfulOutputLines(csStdout)
+  const rowCount = Math.min(Math.max(cl.length, csl.length, 1), MAX_LINE_ROWS)
+  const diffs: ParityFieldDiff[] = []
+
+  for (let i = 0; i < rowCount; i++) {
+    const cobol = i < cl.length ? cl[i] : '—'
+    const csharp = i < csl.length ? csl[i] : '—'
+    const equal = cobol === csharp
+    diffs.push({
+      field: `line-${i + 1}`,
+      label: `Line ${i + 1}`,
+      equal,
+      cobol,
+      csharp,
+      fix_hint: equal ? null : 'Align migrated stdout with legacy COBOL for this line (DISPLAY/WRITE).',
+    })
+  }
+
+  if (Math.max(cl.length, csl.length) > MAX_LINE_ROWS) {
+    diffs.push({
+      field: 'truncated',
+      label: '…',
+      equal: cl.length === csl.length,
+      cobol: `${cl.length} line(s)`,
+      csharp: `${csl.length} line(s)`,
+      fix_hint: `Showing first ${MAX_LINE_ROWS} lines — compare full transcripts in the terminals.`,
+    })
+  }
+
+  return {
+    output_equal,
+    display_equal: output_equal,
+    mode: 'lines',
+    diffs,
+  }
+}
+
+/** Prefer structured field diff when stdout matches; otherwise normalized line diff. */
+export function compareParityOutputs(cobStdout: string, csStdout: string): ParityComparison {
+  const cobTx = parseParityTranscript(cobStdout)
+  const csTx = parseParityTranscript(csStdout)
+  const structured = compareParityTranscripts(cobTx, csTx)
+  if (structured) return structured
+  return compareStdoutLines(cobStdout, csStdout)
 }
 
 export function transcriptsAlign(cobol: ParityTranscript, csharp: ParityTranscript): boolean {

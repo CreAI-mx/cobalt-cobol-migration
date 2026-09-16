@@ -50,6 +50,28 @@ _CLAUDE_FALLBACKS = ["/home/frg/.local/bin/claude"]
 # (e.g. a dedicated low-rate-limit account) without touching this file.
 _HEADLESS_HOME = os.environ.get("CLAUDE_HEADLESS_HOME") or os.environ.get("HOME", "")
 
+# COBALT-5 (audit 2026-09-16): a `claude -p` child was only ever killed by
+# the asyncio.TimeoutError branch inside its OWN awaiting coroutine — if the
+# uvicorn PARENT dies instead (crash, kill -9, the exact two-session
+# collision seen this session), every in-flight child is orphaned to init
+# and keeps running/spending tokens with nothing tracking or killing it.
+# Every spawn below registers here; main.py's shutdown handler kills
+# whatever is still alive when the app itself is stopped.
+_ACTIVE_HEADLESS_PROCS: set = set()
+
+
+def kill_all_active_headless_processes() -> int:
+    """Called from main.py's shutdown handler. Returns how many were killed."""
+    killed = 0
+    for proc in list(_ACTIVE_HEADLESS_PROCS):
+        if proc.returncode is None:
+            try:
+                proc.kill()
+                killed += 1
+            except ProcessLookupError:
+                pass
+    return killed
+
 # Real defect found and fixed 2026-09-15: prompts cited ".claude/skills/X/SKILL.md"
 # by name, but headless subprocess cwd was always the OUTPUT dir (target_dir/out_dir,
 # under migration-state/runs/), never the repo root, and --add-dir only granted that
@@ -157,6 +179,7 @@ async def plan_manifest(prompt: str, source_dir: Path,
         env={**os.environ, "HOME": _HEADLESS_HOME, "ECC_GATEGUARD": "off"},
         cwd=str(source_dir),
     )
+    _ACTIVE_HEADLESS_PROCS.add(proc)
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
     except (asyncio.TimeoutError, TimeoutError):
@@ -242,6 +265,15 @@ Rules:
   Never treat the raw on-disk digit string as an already-scaled amount or
   vice versa: always `parsed_digits / 10^b` when reading, `value * 10^b` when
   writing — a units/cents scale mixup is a silent, high-severity bug.
+- If two DIFFERENT already-generated types share the same simple name (e.g.
+  two unrelated work items each declare their own `AccountRecord`, one under
+  `...UseCases.AccountLookup` with a `Name` property, another under
+  `...UseCases.TransactionPosting` with an `AccountName` property instead) —
+  a real CS0117 this session — do not assume they have the same property
+  names just because the type name matches. When writing an adapter that
+  must satisfy MULTIPLE interfaces with same-named-but-different types,
+  check each interface's own (already generated) declaration above for its
+  own exact property names before constructing that specific type.
 {cli_manifest_rule}
 JSON only when done: {{"files_written": ["<relative path>", ...]}}
 """
@@ -306,6 +338,7 @@ async def convert_work_item(
         env={**os.environ, "HOME": _HEADLESS_HOME, "ECC_GATEGUARD": "off"},
         cwd=str(out_dir),
     )
+    _ACTIVE_HEADLESS_PROCS.add(proc)
     envelope: dict | None = None
     stderr_chunks: list[bytes] = []
 
@@ -475,6 +508,7 @@ async def repair_csharp(target_dir: Path, errors: str, timeout_s: int = _TIMEOUT
         env={**os.environ, "HOME": _HEADLESS_HOME, "ECC_GATEGUARD": "off"},
         cwd=str(target_dir),
     )
+    _ACTIVE_HEADLESS_PROCS.add(proc)
     envelope: dict | None = None
     stderr_chunks: list[bytes] = []
 
@@ -573,6 +607,7 @@ async def write_mvp_docs(target_dir: Path, timeout_s: int = _TIMEOUT_S,
         env={**os.environ, "HOME": _HEADLESS_HOME, "ECC_GATEGUARD": "off"},
         cwd=str(target_dir),
     )
+    _ACTIVE_HEADLESS_PROCS.add(proc)
     envelope: dict | None = None
 
     async def _drain():

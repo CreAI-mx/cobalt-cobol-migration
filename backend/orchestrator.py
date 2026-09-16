@@ -320,6 +320,28 @@ async def _store_artifacts(conn: aiosqlite.Connection, run_id: str,
     await conn.commit()
 
 
+# COBALT-4 (audit 2026-09-16): migration-cost-governance exists as a skill
+# document but nothing anywhere ever summed real spend and compared it to a
+# limit — cost_logs was write-only. MAX_RETRY bounds ATTEMPT count, not
+# dollars; a work item alone can push ~400K input tokens in one call. This
+# is the actual enforcement point: a hard ceiling checked before every
+# headless call a run makes, not just documentation of intent.
+MAX_RUN_COST_USD = float(os.environ.get("COBALT_MAX_COST_USD", "10.00"))
+
+
+async def _cumulative_cost(conn: aiosqlite.Connection, run_id: str) -> float:
+    cur = await conn.execute(
+        "SELECT COALESCE(SUM(cost_usd), 0) FROM cost_logs WHERE run_id = ?", (run_id,),
+    )
+    row = await cur.fetchone()
+    return float(row[0] or 0.0)
+
+
+async def _cost_budget_exceeded(conn: aiosqlite.Connection, run_id: str) -> tuple[bool, float]:
+    spent = await _cumulative_cost(conn, run_id)
+    return spent >= MAX_RUN_COST_USD, spent
+
+
 async def _log_cost(conn: aiosqlite.Connection, run_id: str, phase: str, meta: dict) -> None:
     await conn.execute(
         "INSERT INTO cost_logs (log_id, run_id, phase, agent_id, input_tokens, "
@@ -469,6 +491,16 @@ async def _run_worker(conn: aiosqlite.Connection, run_id: str, plan: MigrationPl
         await _set_item_status(conn, run_id, item, "completed")
         _emit(events, run_id, "Generating", item, "OK", f"{len(arts)} files integrated")
     except Exception as exc:
+        # COBALT-7 (audit 2026-09-16): HeadlessInvocationError carries real
+        # cost_usd/token counts for tokens already spent before the crash —
+        # this branch used to drop that spend entirely, so a run's real cost
+        # (via cost_logs) undercounted every failed attempt, not just
+        # successful ones.
+        if isinstance(exc, llm.HeadlessInvocationError):
+            await _log_cost(conn, run_id, "Generating", {
+                "cost_usd": exc.cost_usd, "input_tokens": exc.input_tokens,
+                "output_tokens": exc.output_tokens, "latency_ms": exc.latency_ms,
+            })
         item.retry_count += 1
         await _set_item_status(conn, run_id, item, "failed", str(exc)[:400])
         _emit(events, run_id, "Generating", item, "FAILED", str(exc)[:400])
@@ -647,6 +679,13 @@ async def execute_migration(run_id: str, conn: aiosqlite.Connection, events: lis
     stage_attempts: dict[str, int] = {"build": 0, "test": 0, "parity": 0}
     ok, failed_stage, log = await _verify_chain()
     while not ok and stage_attempts[failed_stage] < MAX_RETRY:
+        over_budget, spent = await _cost_budget_exceeded(conn, run_id)
+        if over_budget:
+            events.append(PhaseEvent(
+                phase="Repairing", skill="bugfix-loop", status="BLOCKED",
+                detail=f"cost cap reached (${spent:.2f} >= ${MAX_RUN_COST_USD:.2f}) — stopping repair attempts",
+            ))
+            break
         stage_attempts[failed_stage] += 1
         repair_attempts = stage_attempts[failed_stage]
         repair_fn, label = _REPAIR_FNS[failed_stage]
@@ -674,6 +713,12 @@ async def execute_migration(run_id: str, conn: aiosqlite.Connection, events: lis
                 phase="Repairing", skill="bugfix-loop", status="RUNNING",
                 detail=f"repair agent errored ({str(exc)[:200]}) — re-verifying anyway",
             ))
+            # COBALT-7: this crash still spent real tokens before failing —
+            # log them instead of dropping that cost from cost_logs.
+            await _log_cost(conn, run_id, "Repairing", {
+                "cost_usd": exc.cost_usd, "input_tokens": exc.input_tokens,
+                "output_tokens": exc.output_tokens, "latency_ms": exc.latency_ms,
+            })
         ok, failed_stage, log = await _verify_chain()
         if ok:
             events.append(PhaseEvent(

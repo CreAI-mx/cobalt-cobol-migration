@@ -7,6 +7,7 @@ import asyncio
 import hashlib
 import os
 import re
+import stat
 import tempfile
 import zipfile
 from datetime import datetime, timezone
@@ -137,20 +138,64 @@ async def _extract_zip(upload: UploadFile, extract_dir: Path) -> None:
                         413, f"Upload exceeds {MAX_UPLOAD_BYTES // (1024 * 1024)}MB limit"
                     )
                 tmp.write(chunk)
-        with zipfile.ZipFile(tmp_path) as zf:
+        try:
+            zf = zipfile.ZipFile(tmp_path)
+        except zipfile.BadZipFile:
+            # COBALT-10 (audit 2026-09-16): this used to propagate as an
+            # unhandled 500, and the extract_dir mkdir'd by the caller before
+            # this function runs was left behind forever with no DB row
+            # referencing it — invisible to any cleanup. A real 4xx here at
+            # least tells the caller what happened; extract_dir cleanup is
+            # the caller's existing responsibility on any HTTPException.
+            raise HTTPException(400, "Not a valid zip file (corrupted or wrong format).")
+        with zf:
             resolved_root = extract_dir.resolve()
             total_uncompressed = 0
             for member in zf.infolist():
                 target = (extract_dir / member.filename).resolve()
                 if not target.is_relative_to(resolved_root):
                     raise HTTPException(400, f"Unsafe path in archive: {member.filename}")
+                # COBALT-8: a zip can store a symlink whose TARGET points
+                # outside extract_dir entirely (e.g. "link -> /etc/passwd")
+                # — the path check above only guards the link's own name,
+                # not what it resolves to once extracted. Reject symlinks
+                # outright; nothing in a COBOL source tree needs one.
+                if stat.S_ISLNK(member.external_attr >> 16):
+                    raise HTTPException(400, f"Symlinks are not accepted in archives: {member.filename}")
                 total_uncompressed += member.file_size
                 if total_uncompressed > MAX_UNCOMPRESSED_BYTES:
                     raise HTTPException(
                         413,
                         f"Archive exceeds {MAX_UNCOMPRESSED_BYTES // (1024 * 1024)}MB uncompressed limit",
                     )
-            zf.extractall(extract_dir)
+            # COBALT-3 (audit 2026-09-16): the check above only sums
+            # attacker-controlled `file_size` METADATA from the central
+            # directory — it never validates real decompressed bytes, so a
+            # crafted zip declaring tiny sizes but containing a highly
+            # compressed payload bypassed the guard entirely (a classic
+            # zip-bomb). Extract member-by-member with a real running byte
+            # counter instead of one trusting `extractall()` to respect
+            # metadata it never checks against actual output size.
+            real_total = 0
+            for member in zf.infolist():
+                target = extract_dir / member.filename
+                if member.is_dir():
+                    target.mkdir(parents=True, exist_ok=True)
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with zf.open(member) as src, open(target, "wb") as dst:
+                    while True:
+                        chunk = src.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        real_total += len(chunk)
+                        if real_total > MAX_UNCOMPRESSED_BYTES:
+                            raise HTTPException(
+                                413,
+                                f"Archive exceeds {MAX_UNCOMPRESSED_BYTES // (1024 * 1024)}MB "
+                                "uncompressed limit (real decompressed size, not declared metadata)",
+                            )
+                        dst.write(chunk)
     finally:
         if tmp_path is not None:
             tmp_path.unlink(missing_ok=True)

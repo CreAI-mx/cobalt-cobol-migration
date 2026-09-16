@@ -15,7 +15,7 @@ import aiosqlite
 
 from db import get_db, open_db
 from models import AgentStackConfig, ArchitectureDecision, BusinessLogicExtract, FileEvent, PhaseEvent, RunStatusResponse
-from routers.intake import classify_file_kind
+from routers.intake import classify_file_kind, github_clone_url
 import llm
 import orchestrator
 import parity_demo
@@ -190,53 +190,64 @@ async def _snapshot_events_loop(run_id: str, conn: aiosqlite.Connection) -> None
         raise
 
 
+# COBALT-6 (audit 2026-09-16): COBALT_MAX_AGENTS only bounds parallelism
+# WITHIN one run — nothing limited how many DIFFERENT run_ids could execute
+# concurrently, so N callers hitting N distinct run_ids could each spawn up
+# to MAX_AGENTS headless processes with zero global ceiling. This semaphore
+# caps the number of runs actually executing at once; any request beyond the
+# cap queues (awaits the semaphore) rather than piling on more concurrent
+# headless subprocesses than the box can handle.
+_GLOBAL_RUN_SEMAPHORE = asyncio.Semaphore(int(os.environ.get("COBALT_MAX_CONCURRENT_RUNS", "3")))
+
+
 async def _execute_run(run_id: str) -> None:
     """Own the SQLite connection for the whole pipeline — the /start request
     returns immediately so the wizard stays interactive."""
-    conn = await open_db()
-    snapshot_conn = await open_db()
-    snapshot_task = asyncio.create_task(_snapshot_events_loop(run_id, snapshot_conn))
-    try:
-        await _run_phases(run_id, conn)
-        phases = _phase_summary(run_id)
-        final_status = "FAILED" if any(p.status == "BLOCKED" for p in phases) else "PASSED"
-        await conn.execute(
-            "UPDATE migration_runs SET status = ?, finished_at = ? WHERE run_id = ?",
-            (final_status, datetime.now(timezone.utc).isoformat(), run_id),
-        )
-        await conn.commit()
-    except Exception:
-        # str(exc) alone can be empty (e.g. some asyncio/subprocess errors) —
-        # that produced an undiagnosable "pipeline crashed: " with nothing
-        # after it. Print the real traceback to the server log so a crash is
-        # never silent, and surface a non-empty summary in the event detail.
-        tb = traceback.format_exc()
-        print(f"[_execute_run] run_id={run_id} crashed:\n{tb}", flush=True)
-        last_line = tb.strip().splitlines()[-1] if tb.strip() else "unknown error"
-        events = _run_state.setdefault(run_id, [])
-        events.append(PhaseEvent(
-            phase="Phase 4", skill="pipeline", status="BLOCKED",
-            detail=f"pipeline crashed: {last_line}"[:400],
-        ))
-        if not any(isinstance(e, PhaseEvent) and e.phase == _DONE_PHASE for e in events):
-            events.append(PhaseEvent(phase=_DONE_PHASE, skill="pipeline", status="OK",
-                                     detail="stream complete"))
+    async with _GLOBAL_RUN_SEMAPHORE:
+        conn = await open_db()
+        snapshot_conn = await open_db()
+        snapshot_task = asyncio.create_task(_snapshot_events_loop(run_id, snapshot_conn))
         try:
+            await _run_phases(run_id, conn)
+            phases = _phase_summary(run_id)
+            final_status = "FAILED" if any(p.status == "BLOCKED" for p in phases) else "PASSED"
             await conn.execute(
                 "UPDATE migration_runs SET status = ?, finished_at = ? WHERE run_id = ?",
-                ("FAILED", datetime.now(timezone.utc).isoformat(), run_id),
+                (final_status, datetime.now(timezone.utc).isoformat(), run_id),
             )
             await conn.commit()
         except Exception:
-            pass
-    finally:
-        snapshot_task.cancel()
-        try:
-            await snapshot_task
-        except asyncio.CancelledError:
-            pass
-        await snapshot_conn.close()
-        await conn.close()
+            # str(exc) alone can be empty (e.g. some asyncio/subprocess errors) —
+            # that produced an undiagnosable "pipeline crashed: " with nothing
+            # after it. Print the real traceback to the server log so a crash is
+            # never silent, and surface a non-empty summary in the event detail.
+            tb = traceback.format_exc()
+            print(f"[_execute_run] run_id={run_id} crashed:\n{tb}", flush=True)
+            last_line = tb.strip().splitlines()[-1] if tb.strip() else "unknown error"
+            events = _run_state.setdefault(run_id, [])
+            events.append(PhaseEvent(
+                phase="Phase 4", skill="pipeline", status="BLOCKED",
+                detail=f"pipeline crashed: {last_line}"[:400],
+            ))
+            if not any(isinstance(e, PhaseEvent) and e.phase == _DONE_PHASE for e in events):
+                events.append(PhaseEvent(phase=_DONE_PHASE, skill="pipeline", status="OK",
+                                         detail="stream complete"))
+            try:
+                await conn.execute(
+                    "UPDATE migration_runs SET status = ?, finished_at = ? WHERE run_id = ?",
+                    ("FAILED", datetime.now(timezone.utc).isoformat(), run_id),
+                )
+                await conn.commit()
+            except Exception:
+                pass
+        finally:
+            snapshot_task.cancel()
+            try:
+                await snapshot_task
+            except asyncio.CancelledError:
+                pass
+            await snapshot_conn.close()
+            await conn.close()
 
 
 @router.post("/{run_id}/start", response_model=RunStatusResponse)
@@ -616,6 +627,14 @@ async def github_push(run_id: str, body: dict):
 
     # User 2026-09-15: "el github destino sin nada" — push the generated
     # C# exactly as-is, no extra files (no CI workflow, nothing added).
+    # COBALT-2 (audit 2026-09-16): repo_url used to be passed straight to
+    # `git push -f` with zero validation — an unauthenticated caller could
+    # force-push a client's migrated code to any attacker-controlled repo
+    # using this machine's real stored GitHub credential. Reuse intake's own
+    # github.com/https allowlist here instead of trusting the caller.
+    if repo_url:
+        repo_url = github_clone_url(repo_url)
+
     username, password = await _github_credential()
     if not repo_url:
         repo_url = await _github_create_repo(username, password, repo_name)

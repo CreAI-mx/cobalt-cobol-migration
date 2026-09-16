@@ -8,10 +8,8 @@ import {
   type ParityTerminalPane,
 } from '../lib/api'
 import {
-  compareParityTranscripts,
+  compareParityOutputs,
   comparisonSimilarityPct,
-  formatOutputPreview,
-  parseParityTranscript,
 } from '../lib/parityTranscript'
 
 interface Props {
@@ -23,14 +21,14 @@ const IDLE: Record<'cobol' | 'csharp', ParityTerminalPane> = {
   cobol: {
     title: 'COBOL — GnuCOBOL oracle',
     command: '',
-    stdout: '# idle — Run COBOL compiles account_lookup.cbl and pipes the fixture account',
+    stdout: '# idle — Run COBOL compiles the legacy program with the run fixture input',
     exit_code: 0,
     ok: true,
   },
   csharp: {
     title: 'C# — CLI oracle',
     command: '',
-    stdout: '# idle — Run C# executes dotnet run on *Cli with the same accounts.dat + stdin',
+    stdout: '# idle — Run C# executes the migrated CLI with the same fixture input',
     exit_code: 0,
     ok: true,
   },
@@ -55,8 +53,8 @@ function TermSandbox({
 }) {
   const hint =
     side === 'cobol'
-      ? 'cobc -x -free account_lookup.cbl -o oracle && echo $ACCT | ./oracle'
-      : 'dotnet run --project *Cli.csproj -- account-lookup'
+      ? 'cobc -x -free <program.cbl> -o oracle && …'
+      : 'dotnet run --project <*Cli.csproj> [args per parity-manifest]'
 
   return (
     <article className={`term-pane term-pane-${side}`} aria-label={pane.title}>
@@ -67,11 +65,13 @@ function TermSandbox({
         </span>
       </div>
       <div className="term-prompt-line mono" aria-hidden>
-        <span className="term-prompt-user">cobalt</span>
-        <span className="term-prompt-at">@</span>
-        <span className="term-prompt-host">{side}</span>
-        <span className="term-prompt-path">:~$</span>
-        <span className="term-prompt-cmd">{pane.command || hint}</span>
+        <div className="term-prompt-prefix">
+          <span className="term-prompt-user">cobalt</span>
+          <span className="term-prompt-at">@</span>
+          <span className="term-prompt-host">{side}</span>
+          <span className="term-prompt-path">:~$</span>
+        </div>
+        <div className="term-prompt-cmd">{pane.command || hint}</div>
       </div>
       <pre className="term-body mono">{pane.stdout || '(no output yet)'}</pre>
       <div className="term-pane-foot">
@@ -88,24 +88,76 @@ function TermSandbox({
   )
 }
 
+function parityFieldLabel(label: string): string {
+  if (label.startsWith('Resultado')) return 'Outcome (FOUND / NOT FOUND)'
+  return label
+}
+
+function matchCellLabel(row: ParityComparison['diffs'][number]): string {
+  if (!row.equal) return 'No'
+  if (row.display_equal === false && row.numeric_equal !== false) return 'Display differs'
+  return 'Yes'
+}
+
+function ParityCompareTable({ comparison }: { comparison: ParityComparison }) {
+  const equal = comparison.output_equal
+  const similarity = comparisonSimilarityPct(comparison)
+
+  return (
+    <div className="parity-compare-table-wrap">
+      <table
+        className="parity-compare-table mono"
+        aria-label={`Field comparison, ${similarity} percent match, ${equal ? 'match' : 'mismatch'}`}
+      >
+        <thead>
+          <tr>
+            <th scope="col" className="parity-col-field">
+              Field
+            </th>
+            <th scope="col" className="parity-col-legacy">
+              Legacy · COBOL
+            </th>
+            <th scope="col" className="parity-col-migrated">
+              Migrated · C#
+            </th>
+            <th scope="col" className="parity-col-match">
+              <span className="parity-match-head">
+                <span className="parity-match-head-title">Match</span>
+                <span className="parity-match-head-pct">{similarity}%</span>
+                <span className="parity-match-head-mode">
+                  {comparison.mode === 'lines' ? 'lines' : 'fields'}
+                </span>
+                <span className={`parity-match-head-verdict ${equal ? 'ok' : 'fail'}`}>
+                  {equal ? 'MATCH' : 'MISMATCH'}
+                </span>
+              </span>
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {comparison.diffs.map((row) => (
+            <tr key={row.field} className={row.equal ? 'parity-row-match' : 'parity-row-mismatch'}>
+              <th scope="row">{parityFieldLabel(row.label)}</th>
+              <td className="parity-td-legacy">{row.cobol}</td>
+              <td className="parity-td-migrated">{row.csharp}</td>
+              <td className={row.equal ? 'parity-cell-ok' : 'parity-cell-fail'}>
+                {matchCellLabel(row)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 function ParityDiffPanel({
   comparison,
-  cobolStdout,
-  csharpStdout,
-  cobTx,
-  csTx,
 }: {
   comparison: ParityComparison
-  cobolStdout: string
-  csharpStdout: string
-  cobTx: ReturnType<typeof parseParityTranscript>
-  csTx: ReturnType<typeof parseParityTranscript>
 }) {
   const equal = comparison.output_equal
   const mismatches = comparison.diffs.filter((d) => !d.equal)
-  const similarity = comparisonSimilarityPct(comparison)
-  const cobPreview = formatOutputPreview(cobolStdout, cobTx)
-  const csPreview = formatOutputPreview(csharpStdout, csTx)
 
   return (
     <div
@@ -113,30 +165,15 @@ function ParityDiffPanel({
       role="region"
       aria-label="COBOL vs C# output comparison"
     >
-      <div className="parity-compare-visual">
-        <div className="parity-compare-col parity-compare-col-cobol">
-          <span className="parity-compare-col-label">Legacy COBOL output</span>
-          <pre className="parity-compare-output mono">{cobPreview}</pre>
-        </div>
-        <div className="parity-compare-col parity-compare-col-csharp">
-          <span className="parity-compare-col-label">Migrated C# output</span>
-          <pre className="parity-compare-output mono">{csPreview}</pre>
-        </div>
-        <div className="parity-similarity-card" aria-label={`Similarity ${similarity} percent`}>
-          <span className="parity-similarity-pct">{similarity}%</span>
-          <span className="parity-similarity-caption">field match</span>
-          <div className="parity-similarity-bar" role="presentation">
-            <span className="parity-similarity-fill" style={{ width: `${similarity}%` }} />
-          </div>
-          <strong className={`parity-similarity-verdict ${equal ? 'ok' : 'fail'}`}>
-            {equal ? 'MATCH' : 'MISMATCH'}
-          </strong>
-        </div>
-      </div>
-
-      {!comparison.display_equal && equal && (
+      {comparison.mode === 'lines' && (
         <p className="parity-output-banner-sub muted">
-          Same business result; BALANCE display text may still differ on the console.
+          Line-by-line comparison (normalized stdout). For manifest-driven parity, see Phase 6 in the run log.
+        </p>
+      )}
+
+      {comparison.mode === 'structured' && !comparison.display_equal && equal && (
+        <p className="parity-output-banner-sub muted">
+          Same business result; display formatting may still differ on the console.
         </p>
       )}
 
@@ -144,34 +181,14 @@ function ParityDiffPanel({
         <ul className="parity-fix-list">
           {mismatches.map((d) => (
             <li key={d.field}>
-              <strong>{d.label}:</strong> {d.fix_hint ?? 'See terminal transcripts above.'}
+              <strong>{parityFieldLabel(d.label)}:</strong>{' '}
+              {d.fix_hint ?? 'See terminal transcripts above.'}
             </li>
           ))}
         </ul>
       )}
 
-      <table className="parity-compare-table mono">
-        <thead>
-          <tr>
-            <th scope="col">Field</th>
-            <th scope="col">COBOL</th>
-            <th scope="col">C#</th>
-            <th scope="col">Match</th>
-          </tr>
-        </thead>
-        <tbody>
-          {comparison.diffs.map((row) => (
-            <tr key={row.field} className={row.equal ? '' : 'parity-row-mismatch'}>
-              <th scope="row">{row.label}</th>
-              <td>{row.cobol}</td>
-              <td>{row.csharp}</td>
-              <td className={row.equal ? 'parity-cell-ok' : 'parity-cell-fail'}>
-                {row.equal ? 'Yes' : 'No'}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <ParityCompareTable comparison={comparison} />
     </div>
   )
 }
@@ -188,15 +205,13 @@ export default function ParityConsole({ runId, disabled }: Props) {
   const [statusHint, setStatusHint] = useState<string | null>(null)
   const [comparisonFromApi, setComparisonFromApi] = useState<ParityComparison | null>(null)
 
-  const cobTx = useMemo(() => parseParityTranscript(cobol.stdout), [cobol.stdout])
-  const csTx = useMemo(() => parseParityTranscript(csharp.stdout), [csharp.stdout])
-  const showCompare = paneRan(cobol) && paneRan(csharp) && (cobTx.outcome || csTx.outcome)
+  const bothExecuted = paneRan(cobol) && paneRan(csharp)
 
   const comparison = useMemo(() => {
     if (comparisonFromApi) return comparisonFromApi
-    if (showCompare) return compareParityTranscripts(cobTx, csTx)
+    if (bothExecuted) return compareParityOutputs(cobol.stdout, csharp.stdout)
     return null
-  }, [comparisonFromApi, showCompare, cobTx, csTx])
+  }, [comparisonFromApi, bothExecuted, cobol.stdout, csharp.stdout])
 
   const apply = useCallback((res: ParityDemoResponse, side: ParityDemoSide) => {
     if (side === 'cobol') setCobol(res.cobol)
@@ -207,7 +222,7 @@ export default function ParityConsole({ runId, disabled }: Props) {
     }
 
     if (res.comparison) setComparisonFromApi(res.comparison)
-    else if (side !== 'both') setComparisonFromApi(null)
+    else if (side === 'both') setComparisonFromApi(null)
 
     if (side === 'both') {
       setVerdict(res.verdict)
@@ -253,7 +268,8 @@ export default function ParityConsole({ runId, disabled }: Props) {
             Parity sandbox
           </h3>
           <p className="pane-sub">
-            Compare COBOL vs <code>*Cli</code> — same <code>accounts.dat</code> y stdin. Terminals above; <strong>comparison summary below</strong> shows each output and match score.
+            Compare legacy COBOL vs migrated <code>*Cli</code> on the same fixture input for this run. Field
+            diff when output matches a known shape; otherwise line-by-line stdout.
           </p>
         </div>
         <div className="parity-console-head-meta">
@@ -289,37 +305,37 @@ export default function ParityConsole({ runId, disabled }: Props) {
         </p>
       )}
 
-      <div className="parity-term-grid">
-        <TermSandbox
-          side="cobol"
-          pane={cobol}
-          running={loadingSide === 'cobol' || loadingSide === 'both'}
-          disabled={disabled}
-          onRun={() => run('cobol')}
-        />
-        <TermSandbox
-          side="csharp"
-          pane={csharp}
-          running={loadingSide === 'csharp' || loadingSide === 'both'}
-          disabled={disabled}
-          onRun={() => run('csharp')}
-        />
+      <div className="parity-dual-columns">
+        <div className="parity-side parity-side-legacy">
+          <TermSandbox
+            side="cobol"
+            pane={cobol}
+            running={loadingSide === 'cobol' || loadingSide === 'both'}
+            disabled={disabled}
+            onRun={() => run('cobol')}
+          />
+        </div>
+        <div className="parity-side parity-side-migrated">
+          <TermSandbox
+            side="csharp"
+            pane={csharp}
+            running={loadingSide === 'csharp' || loadingSide === 'both'}
+            disabled={disabled}
+            onRun={() => run('csharp')}
+          />
+        </div>
       </div>
 
       {comparison && (
-        <ParityDiffPanel
-          comparison={comparison}
-          cobolStdout={cobol.stdout}
-          csharpStdout={csharp.stdout}
-          cobTx={cobTx}
-          csTx={csTx}
-        />
+        <div className="parity-compare-below-terminals">
+          <ParityDiffPanel comparison={comparison} />
+        </div>
       )}
 
       <footer className="parity-console-foot">
         <p className="muted parity-foot-hint">
-          Use <strong>Compare both</strong> for verdict + table. Fix in <code>*Cli/Program.cs</code>,
-          handlers or <code>accounts.dat</code>.
+          Use <strong>Compare both</strong> for verdict + table. Fix migrated handlers, CLI args (
+          <code>parity-manifest.json</code>), or fixture I/O to match legacy behavior.
         </p>
       </footer>
     </section>

@@ -217,9 +217,13 @@ export interface ParityFieldDiff {
   numeric_equal?: boolean
 }
 
+export type ParityComparisonMode = 'structured' | 'lines'
+
 export interface ParityComparison {
   output_equal: boolean
   display_equal: boolean
+  /** structured = parsed fields; lines = normalized stdout diff */
+  mode?: ParityComparisonMode
   diffs: ParityFieldDiff[]
 }
 

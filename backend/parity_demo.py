@@ -276,6 +276,66 @@ def _run_csharp_side(
     return _run_csharp_fallback(csharp, dotnet)
 
 
+
+
+def _normalize_stdout(text: str) -> str:
+    lines = text.replace("\r\n", "\n").split("\n")
+    return "\n".join(line.rstrip() for line in lines).rstrip("\n")
+
+
+def _meaningful_stdout_lines(text: str) -> list[str]:
+    norm = _normalize_stdout(text)
+    lines = [
+        ln.strip()
+        for ln in norm.splitlines()
+        if ln.strip() and not ln.strip().startswith("#") and not ln.strip().startswith("$ ")
+    ]
+    if lines:
+        return lines
+    return [norm.strip()] if norm.strip() else []
+
+
+_MAX_LINE_DIFFS = 40
+
+
+def _build_line_comparison(cobol: dict, csharp: dict) -> dict:
+    cob_norm = _normalize_stdout(cobol.get("stdout") or "")
+    cs_norm = _normalize_stdout(csharp.get("stdout") or "")
+    cl = _meaningful_stdout_lines(cobol.get("stdout") or "")
+    csl = _meaningful_stdout_lines(csharp.get("stdout") or "")
+    row_count = min(max(len(cl), len(csl), 1), _MAX_LINE_DIFFS)
+    diffs: list[dict] = []
+    for i in range(row_count):
+        cb = cl[i] if i < len(cl) else "—"
+        cs = csl[i] if i < len(csl) else "—"
+        eq = cb == cs
+        diffs.append({
+            "field": f"line-{i + 1}",
+            "label": f"Line {i + 1}",
+            "equal": eq,
+            "cobol": cb,
+            "csharp": cs,
+            "fix_hint": None if eq else (
+                "Align migrated stdout with legacy COBOL for this line (DISPLAY/WRITE)."
+            ),
+        })
+    if max(len(cl), len(csl)) > _MAX_LINE_DIFFS:
+        diffs.append({
+            "field": "truncated",
+            "label": "…",
+            "equal": len(cl) == len(csl),
+            "cobol": f"{len(cl)} line(s)",
+            "csharp": f"{len(csl)} line(s)",
+            "fix_hint": f"Showing first {_MAX_LINE_DIFFS} lines — compare full transcripts in the terminals.",
+        })
+    output_equal = cob_norm == cs_norm
+    return {
+        "output_equal": output_equal,
+        "display_equal": output_equal,
+        "mode": "lines",
+        "diffs": diffs,
+    }
+
 def _lookup_outcome(stdout: str) -> str | None:
     u = stdout.upper()
     if "ACCOUNT NOT FOUND" in u:
@@ -312,7 +372,7 @@ def _parse_balance_value(raw: str | None) -> float | None:
         return None
 
 
-def _build_comparison(cobol: dict, csharp: dict) -> dict | None:
+def _build_structured_lookup_comparison(cobol: dict, csharp: dict) -> dict | None:
     if not cobol.get("ok") or not csharp.get("ok"):
         return None
     cob_out = _lookup_outcome(cobol["stdout"])
@@ -340,12 +400,12 @@ def _build_comparison(cobol: dict, csharp: dict) -> dict | None:
     outcome_eq = cob_out == cs_out
     diffs.append({
         "field": "outcome",
-        "label": "Resultado (FOUND / NOT FOUND)",
+        "label": "Outcome (FOUND / NOT FOUND)",
         "equal": outcome_eq,
         "cobol": "ACCOUNT FOUND" if cob_out == "found" else "ACCOUNT NOT FOUND",
         "csharp": "ACCOUNT FOUND" if cs_out == "found" else "ACCOUNT NOT FOUND",
         "fix_hint": None if outcome_eq else (
-            "Corregir lógica de búsqueda en el Handler/CLI C# (debe coincidir con el PERFORM/READ del COBOL)."
+            "Fix account lookup in the C# Handler/CLI to match COBOL READ/PERFORM."
         ),
     })
 
@@ -357,7 +417,7 @@ def _build_comparison(cobol: dict, csharp: dict) -> dict | None:
         "cobol": cn or "—",
         "csharp": sn or "—",
         "fix_hint": None if name_eq else (
-            "Revisar parseo de accounts.dat (ancho 30) o Trim en Program.cs / repositorio."
+            "Check accounts.dat parsing (width 30) or Trim in Program.cs / repository."
         ),
     })
 
@@ -368,13 +428,13 @@ def _build_comparison(cobol: dict, csharp: dict) -> dict | None:
     if not balance_eq:
         if balance_value_eq is False and cb_val is not None and cs_val is not None:
             fix_balance = (
-                f"Valor numérico distinto (COBOL≈{cb_val} vs C#≈{cs_val}). "
-                "Revisar PIC S9(7)V99, escala decimal y lectura del archivo."
+                f"Numeric value differs (COBOL≈{cb_val} vs C#≈{cs_val}). "
+                "Review PIC S9(7)V99, decimal scale, and file read."
             )
         elif not balance_display_eq:
             fix_balance = (
-                "Formato de salida distinto. En *Cli/Program.cs formatear BALANCE como DISPLAY COBOL "
-                "(signo + ceros + decimal, p. ej. +0000010.00)."
+                "Display format differs. In *Cli/Program.cs format BALANCE like COBOL DISPLAY "
+                "(sign + zero padding + decimals, e.g. +0000010.00)."
             )
 
     diffs.append({
@@ -394,8 +454,19 @@ def _build_comparison(cobol: dict, csharp: dict) -> dict | None:
     return {
         "output_equal": output_equal,
         "display_equal": display_equal,
+        "mode": "structured",
         "diffs": diffs,
     }
+
+
+def _build_comparison(cobol: dict, csharp: dict) -> dict | None:
+    if not (cobol.get("stdout") or "").strip() and not (csharp.get("stdout") or "").strip():
+        return None
+    if cobol.get("ok") and csharp.get("ok"):
+        structured = _build_structured_lookup_comparison(cobol, csharp)
+        if structured:
+            return structured
+    return _build_line_comparison(cobol, csharp)
 
 
 def _verdict(cobol: dict, csharp: dict) -> tuple[str, str]:

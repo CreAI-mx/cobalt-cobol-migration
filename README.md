@@ -57,6 +57,24 @@ npm run build   # backend serves frontend/dist in production
 Then `POST /migration/intake` (multipart `.zip` or `repo_url`), followed by
 `POST /migration/{run_id}/start` to run the pipeline end-to-end.
 
+### Building a generated solution manually
+
+If you want to `dotnet build`/`dotnet run` a migrated solution yourself
+(`migration-state/runs/{run_id}/csharp/`) and your system's own `dotnet`
+isn't installed or is missing `libhostfxr.so`, point `DOTNET_ROOT` at
+whichever real .NET 8 SDK install the backend itself uses
+(`cobol_compilers.find_dotnet()` — check `_DOTNET_FALLBACKS` for the exact
+path on this machine) before running any `dotnet` command:
+
+```bash
+export DOTNET_ROOT="<path from find_dotnet()>"
+export PATH="$DOTNET_ROOT:$PATH"
+cd migration-state/runs/{run_id}/csharp
+dotnet build src/Cli/Cli.csproj
+dotnet test tests/Application.Tests/Application.Tests.csproj
+dotnet run --project src/Cli/Cli.csproj -- account-lookup   # one command per line — do not paste multiple dotnet run lines together, stdin routing between them is undefined
+```
+
 ## Tests
 
 ```bash
