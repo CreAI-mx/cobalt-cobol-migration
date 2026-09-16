@@ -574,7 +574,10 @@ async def repair_csharp(target_dir: Path, errors: str, timeout_s: int = _TIMEOUT
 
 _MVP_DOCS_PROMPT = """Write exactly two files, nothing else:
 
-README.md (solution root) — how to `dotnet build`, `dotnet test`, and run the CLI.
+README.md (solution root) — a NUMBERED step-by-step list (1. 2. 3. ...) for
+how to `dotnet build`, `dotnet test`, and run the CLI — never prose
+paragraphs for these steps, a reader must be able to follow them in order
+without re-reading.
 docs/MIGRATION.md — COBOL→C# decisions, traceability (each handler ← COBOL
 PROGRAM-ID), limitations. English, dense, factual.
 
