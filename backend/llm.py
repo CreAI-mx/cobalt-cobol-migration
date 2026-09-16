@@ -295,6 +295,85 @@ Deterministic candidates (verify or replace): {drafts}
                    "latency_ms": latency_ms, "ok": bool(rules), "reason": ""}
 
 
+async def extract_estate_relation_graph(
+    source_dir: Path, candidates: dict, timeout_s: int = 240,
+) -> tuple[dict, dict]:
+    """Importers: exploration_orchestrator._agentic_relation_graph.
+
+    Returns one AS-IS relation+sequence graph (schema 2) plus cost_meta.
+    User: "quiero un diagrama de relacion secuencia uno solo, un grafo,
+    pero esto debe ser construido agenticamente".
+    """
+    claude_bin = find_claude()
+    if claude_bin is None:
+        raise HeadlessInvocationError("claude CLI not found")
+    prompt = """Read the COBOL. Draw ONE pseudocode flowchart of the procedure.
+Not two diagrams. Not a CALL graph plus a paragraph graph.
+
+Each node is a step as a programmer would write it: DISPLAY, ACCEPT, OPEN,
+READ, IF, PERFORM UNTIL, CALL, CLOSE, STOP.
+Node kinds: start | process | decision | loop | call | end | merge
+Edge kinds: next | yes | no | loop | exit
+seq = top-to-bottom reading order. label = short pseudocode.
+
+Source root: {source_dir}
+Parse candidates (verify, then unify): {candidates}
+
+Return JSON only:
+{{"schema":2,"generated_by":"agent","nodes":[{{"id":"s0","label":"ACCOUNT-LOOKUP","kind":"start","seq":0}}],"edges":[{{"source":"s0","target":"s1","kind":"next","label":""}}]}}
+""".format(source_dir=str(source_dir), candidates=json.dumps(candidates)[:24000])
+    t0 = time.monotonic()
+    proc = await asyncio.create_subprocess_exec(
+        claude_bin, "-p", prompt, "--output-format", "json", "--max-turns", "12",
+        "--dangerously-skip-permissions", "--allowedTools", "Read,Grep,Glob",
+        "--disallowedTools", "Bash,Write", "--add-dir", str(source_dir),
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        env=_claude_code_env(), cwd=str(source_dir),
+    )
+    _ACTIVE_HEADLESS_PROCS.add(proc)
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
+    except (asyncio.TimeoutError, TimeoutError):
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        await proc.wait()
+        raise HeadlessInvocationError("relation-graph agent timed out")
+    finally:
+        _ACTIVE_HEADLESS_PROCS.discard(proc)
+    latency_ms = int((time.monotonic() - t0) * 1000)
+    try:
+        envelope = json.loads(stdout.decode(errors="replace"))
+    except json.JSONDecodeError as extra:
+        raise HeadlessInvocationError("relation-graph agent envelope is not JSON") from extra
+    cost, inp, out = _cost_from_envelope(envelope)
+    if proc.returncode != 0 or envelope.get("is_error"):
+        raise HeadlessInvocationError(
+            f"relation-graph agent failed: {(envelope.get('result') or stderr.decode(errors='replace'))[:300]}",
+            cost_usd=cost, input_tokens=inp, output_tokens=out, latency_ms=latency_ms,
+        )
+    result = str(envelope.get("result", ""))
+    start, end = result.find("{"), result.rfind("}")
+    try:
+        payload = json.loads(result[start:end + 1])
+    except (json.JSONDecodeError, ValueError) as extra:
+        raise HeadlessInvocationError(
+            "relation-graph agent result is not JSON",
+            cost_usd=cost, input_tokens=inp, output_tokens=out, latency_ms=latency_ms,
+        ) from extra
+    if not isinstance(payload, dict) or not isinstance(payload.get("nodes"), list):
+        raise HeadlessInvocationError(
+            "relation-graph agent result missing nodes",
+            cost_usd=cost, input_tokens=inp, output_tokens=out, latency_ms=latency_ms,
+        )
+    payload["generated_by"] = "agent"
+    return payload, {
+        "cost_usd": cost, "input_tokens": inp, "output_tokens": out,
+        "latency_ms": latency_ms, "ok": bool(payload.get("nodes")), "reason": "",
+    }
+
+
 _WORK_ITEM_PROMPT = """You convert one migration work item into C#. Write ONLY the
 declared files below — no undeclared Markdown, no frontend.
 
@@ -706,11 +785,26 @@ README.md (solution root) — a NUMBERED step-by-step list (1. 2. 3. ...) for
 how to `dotnet build`, `dotnet test`, and run the CLI — never prose
 paragraphs for these steps, a reader must be able to follow them in order
 without re-reading. Prerequisites section must include REAL install
-commands for .NET 8 SDK per OS (e.g. `brew install --cask dotnet-sdk` on
-macOS, `sudo apt install dotnet-sdk-8.0` on Ubuntu/Debian,
-https://dotnet.microsoft.com/download/dotnet/8.0 otherwise) — never just
-name "the .NET 8 SDK" as a bare assumed prerequisite with no install step,
-a reader without it must be able to get it from this file alone.
+commands for .NET 8 SDK per OS — never just name "the .NET 8 SDK" as a bare
+assumed prerequisite with no install step, a reader without it must be able
+to get it from this file alone.
+
+CRITICAL — verified live 2026-09-16: on Ubuntu/Debian, `sudo apt install
+dotnet-sdk-8.0` can install a BROKEN package (missing libhostfxr.so — `dotnet
+--version` fails with "Failed to resolve libhostfxr.so"). Do NOT recommend
+apt as the primary Linux install method. Instead, for Linux (and as the
+universal fallback for any OS), tell the reader to use Microsoft's own
+install script, which does not have this failure mode:
+```
+curl -sSL https://dot.net/v1/dotnet-install.sh -o dotnet-install.sh
+chmod +x dotnet-install.sh
+./dotnet-install.sh --channel 8.0 --install-dir "$HOME/.dotnet"
+export PATH="$HOME/.dotnet:$PATH"
+```
+List this Linux method FIRST, `brew install --cask dotnet-sdk` for macOS,
+`winget install Microsoft.DotNet.SDK.8` for Windows — and note that if `apt`
+was used and `dotnet --version` fails with a libhostfxr error, the fix is to
+run the script above instead (do not try to repair the apt package).
 docs/MIGRATION.md — COBOL→C# decisions, traceability (each handler ← COBOL
 PROGRAM-ID), limitations. English, dense, factual.
 
