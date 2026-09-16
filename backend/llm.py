@@ -60,6 +60,20 @@ _HEADLESS_HOME = os.environ.get("CLAUDE_HEADLESS_HOME") or os.environ.get("HOME"
 _ACTIVE_HEADLESS_PROCS: set = set()
 
 
+def _claude_code_env() -> dict[str, str]:
+    """Use the authenticated Claude Code Pro session, never a stale API key.
+
+    The exploration/docs flow is intentionally driven by the Claude Code CLI.
+    An inherited ANTHROPIC_API_KEY makes that CLI choose API-key auth first and
+    can turn a healthy Pro login into a 401 before the agent starts.
+    """
+    env = dict(os.environ)
+    for key in ("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"):
+        env.pop(key, None)
+    env.update({"HOME": _HEADLESS_HOME, "ECC_GATEGUARD": "off"})
+    return env
+
+
 def kill_all_active_headless_processes() -> int:
     """Called from main.py's shutdown handler. Returns how many were killed."""
     killed = 0
@@ -176,7 +190,7 @@ async def plan_manifest(prompt: str, source_dir: Path,
         "--add-dir", str(source_dir),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        env={**os.environ, "HOME": _HEADLESS_HOME, "ECC_GATEGUARD": "off"},
+        env=_claude_code_env(),
         cwd=str(source_dir),
     )
     _ACTIVE_HEADLESS_PROCS.add(proc)
@@ -220,6 +234,65 @@ async def plan_manifest(prompt: str, source_dir: Path,
         "latency_ms": latency_ms,
     }
     return payload, cost_meta
+
+
+async def extract_exploration_rules(source_dir: Path, member_paths: list[str],
+                                    draft_rules: list[dict], timeout_s: int = 180) -> tuple[list[dict], dict]:
+    """Read-only Claude Code pass for evidence-backed AS-IS rules."""
+    claude_bin = find_claude()
+    if claude_bin is None:
+        raise HeadlessInvocationError("claude CLI not found")
+    prompt = """Read the COBOL source. Extract only AS-IS business rules.
+Use simple English internally. Do not write files. Do not discuss migration.
+Every rule must have one or more exact anchors in `file:line` format. Return
+only JSON: {{\"business_rules\":[{{\"text\":\"...\",\"anchors\":[\"file:12\"],\"source\":\"agent\"}}]}}.
+If evidence is insufficient, return an empty list.
+
+Member paths: {paths}
+Deterministic candidates (verify or replace): {drafts}
+""".format(paths=json.dumps(member_paths), drafts=json.dumps(draft_rules))
+    t0 = time.monotonic()
+    proc = await asyncio.create_subprocess_exec(
+        claude_bin, "-p", prompt, "--output-format", "json", "--max-turns", "8",
+        "--dangerously-skip-permissions", "--allowedTools", "Read,Grep,Glob",
+        "--disallowedTools", "Bash,Write", "--add-dir", str(source_dir),
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        env=_claude_code_env(), cwd=str(source_dir),
+    )
+    _ACTIVE_HEADLESS_PROCS.add(proc)
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
+    except (asyncio.TimeoutError, TimeoutError):
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        await proc.wait()
+        raise HeadlessInvocationError("business-rule agent timed out")
+    latency_ms = int((time.monotonic() - t0) * 1000)
+    try:
+        envelope = json.loads(stdout.decode(errors="replace"))
+    except json.JSONDecodeError as exc:
+        raise HeadlessInvocationError("business-rule agent envelope is not JSON") from exc
+    cost, inp, out = _cost_from_envelope(envelope)
+    if proc.returncode != 0 or envelope.get("is_error"):
+        raise HeadlessInvocationError(
+            f"business-rule agent failed: {(envelope.get('result') or stderr.decode(errors='replace'))[:300]}",
+            cost_usd=cost, input_tokens=inp, output_tokens=out, latency_ms=latency_ms,
+        )
+    result = str(envelope.get("result", ""))
+    start, end = result.find("{"), result.rfind("}")
+    try:
+        payload = json.loads(result[start:end + 1])
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise HeadlessInvocationError("business-rule agent result is not JSON", cost_usd=cost,
+                                     input_tokens=inp, output_tokens=out, latency_ms=latency_ms) from exc
+    rules = payload.get("business_rules")
+    if not isinstance(rules, list):
+        raise HeadlessInvocationError("business-rule agent result missing business_rules", cost_usd=cost,
+                                     input_tokens=inp, output_tokens=out, latency_ms=latency_ms)
+    return rules, {"cost_usd": cost, "input_tokens": inp, "output_tokens": out,
+                   "latency_ms": latency_ms, "ok": bool(rules), "reason": ""}
 
 
 _WORK_ITEM_PROMPT = """You convert one migration work item into C#. Write ONLY the
@@ -349,7 +422,7 @@ async def convert_work_item(
         "--add-dir", str(_skill_path(skill_name).parent),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        env={**os.environ, "HOME": _HEADLESS_HOME, "ECC_GATEGUARD": "off"},
+        env=_claude_code_env(),
         cwd=str(out_dir),
     )
     _ACTIVE_HEADLESS_PROCS.add(proc)
@@ -560,7 +633,7 @@ async def repair_csharp(target_dir: Path, errors: str, timeout_s: int = _TIMEOUT
         "--add-dir", str(target_dir),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        env={**os.environ, "HOME": _HEADLESS_HOME, "ECC_GATEGUARD": "off"},
+        env=_claude_code_env(),
         cwd=str(target_dir),
     )
     _ACTIVE_HEADLESS_PROCS.add(proc)
@@ -647,6 +720,159 @@ Existing tree:
 Write tool only. JSON: {{"files_written": ["README.md", "docs/MIGRATION.md"]}}
 """
 
+# Pre-migration documentation is a separate product from migration
+# documentation.  The agent receives the legacy estate, an output directory,
+# the approved local reference package, and the project's closure criteria.
+# It is explicitly prohibited from inventing a TO-BE design or writing C#.
+_EXPLORATION_DOC_FILES = [
+    "README.md",
+    "documentation_graph.json",
+    "00-trazabilidad/esquema-de-ids.md",
+    "00-trazabilidad/registro-trazabilidad.csv",
+    "01-funcional/01-catalogo-de-reglas-de-negocio.md",
+    "01-funcional/02-procesos-y-casos-de-uso.md",
+    "01-funcional/03-glosario-de-negocio.md",
+    "01-funcional/04-preguntas-abiertas.md",
+    "02-tecnico/05-inventario-y-catalogo-de-programas.md",
+    "02-tecnico/06-diccionario-de-datos.md",
+    "02-tecnico/07-mapa-de-dependencias.md",
+    "02-tecnico/08-inventario-de-integraciones.md",
+    "02-tecnico/09-catalogo-de-procesos-batch.md",
+    "02-tecnico/10-diagramas-as-is.md",
+    "02-tecnico/11-evaluacion-de-complejidad-y-riesgo.md",
+]
+
+_EXPLORATION_DOCS_PROMPT = """Produce the complete PRE-MIGRATION / AS-IS
+COBOL documentation dossier. This is exploration and documentation only:
+DO NOT create C#, architecture TO-BE, OpenAPI, mappings, plans, tests, or any
+other migration output.
+
+Read the complete input estate in LEGACY_SOURCE, the closure criteria in GUIDE, and
+the formatting/reference package in REFERENCE_PACKAGE before writing. Use the
+same directory and document naming convention as the reference package.
+
+Write exactly these files under OUTPUT_DIR, and no others:
+{expected}
+
+Non-negotiable evidence contract:
+- Every claim about existing COBOL behavior must cite `file:line` or
+  `file:start-end`; do not fabricate runtime observations.
+- Distinguish direct code evidence from inference. Mark unverified statements
+  as candidates and send uncertainty to preguntas abiertas.
+- The CSV is the source of truth: stable IDs (PGM-, DAT-, UC-, BR-, RSK-, QA-)
+  with source file/range, verification method, validation status, and empty
+  TO-BE fields. All IDs used by Markdown must exist in that CSV.
+- Explicitly document both present and searched-but-absent artifacts
+  (copybooks, FILE SECTION, SQL, CICS, MQ, FTP, REST/SOAP, CL/JCL, batch).
+- Inventory every supplied file, including frontend, design, configuration,
+  scripts and documents. They are AS-IS evidence even when they are outside
+  the future backend migration scope; label that scope instead of omitting it.
+- Diagrams must be Mermaid text and trace their nodes/edges to source.
+- Never silently invent a business intent from a technical construct.
+- `documentation_graph.json` is a JSON object with `nodes` and `edges`.
+  Each node has `id`, `label`, `kind` (`program|rule|risk|question|document`),
+  `x`, `y`, and optional `evidence`. Each edge has `source`, `target`, `kind`,
+  and optional `evidence`. Place nodes deliberately to explain semantic
+  relationships; do not emit a generic linear flow.
+
+LEGACY_SOURCE: {source_dir}
+OUTPUT_DIR: {output_dir}
+GUIDE: {guide_path}
+REFERENCE_PACKAGE: {reference_dir}
+
+Use Read and Write tools only. Return JSON only when finished:
+{{"files_written": ["<relative path>", ...]}}
+"""
+
+
+async def write_exploration_docs(
+    source_dir: Path, output_dir: Path, guide_path: Path, reference_dir: Path,
+    timeout_s: int = 600, on_progress=None,
+) -> ConversionResult:
+    """Run the same authenticated Claude Code engine used by migration.
+
+    The process may read source and reference material but may write only in
+    the run-owned output directory. The deterministic renderer establishes a
+    recoverable skeleton first; this agent enriches it with code-grounded
+    analysis and the final documentation prose.
+    """
+    claude_bin = find_claude()
+    if claude_bin is None:
+        raise HeadlessInvocationError("claude CLI not found")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    prompt = _EXPLORATION_DOCS_PROMPT.format(
+        expected="\n".join(f"- {path}" for path in _EXPLORATION_DOC_FILES),
+        source_dir=source_dir,
+        output_dir=output_dir,
+        guide_path=guide_path,
+        reference_dir=reference_dir,
+    )
+    t0 = time.monotonic()
+    proc = await asyncio.create_subprocess_exec(
+        claude_bin, "-p", prompt,
+        "--output-format", "stream-json", "--verbose", "--max-turns", "24",
+        "--dangerously-skip-permissions", "--allowedTools", "Read,Write",
+        "--disallowedTools", "Bash", "--add-dir", str(source_dir),
+        "--add-dir", str(output_dir), "--add-dir", str(guide_path.parent),
+        "--add-dir", str(reference_dir), stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=_claude_code_env(),
+        cwd=str(output_dir),
+    )
+    _ACTIVE_HEADLESS_PROCS.add(proc)
+    envelope: dict | None = None
+    stderr_chunks: list[bytes] = []
+
+    async def _drain() -> None:
+        while True:
+            line = await proc.stderr.readline()
+            if not line:
+                return
+            stderr_chunks.append(line)
+
+    async def _read() -> None:
+        nonlocal envelope
+        while True:
+            line = await proc.stdout.readline()
+            if not line:
+                return
+            try:
+                message = json.loads(line.strip())
+            except json.JSONDecodeError:
+                continue
+            if message.get("type") == "assistant" and on_progress:
+                for block in message.get("message", {}).get("content", []):
+                    if block.get("type") == "tool_use":
+                        on_progress(str(block.get("name")))
+            elif message.get("type") == "result":
+                envelope = message
+
+    try:
+        await asyncio.wait_for(asyncio.gather(_read(), _drain()), timeout=timeout_s)
+    except (asyncio.TimeoutError, TimeoutError):
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        await proc.wait()
+        raise HeadlessInvocationError(f"exploration documentation timed out after {timeout_s}s")
+    await proc.wait()
+    latency_ms = int((time.monotonic() - t0) * 1000)
+    cost, inp, out = _cost_from_envelope(envelope)
+    if envelope is None or envelope.get("is_error") or proc.returncode != 0:
+        reason = (envelope or {}).get("result") or b"".join(stderr_chunks).decode(errors="replace")
+        raise HeadlessInvocationError(
+            f"exploration documentation agent failed: {reason}"[:400],
+            cost_usd=cost, input_tokens=inp, output_tokens=out, latency_ms=latency_ms,
+        )
+    missing = [path for path in _EXPLORATION_DOC_FILES if not (output_dir / path).is_file()]
+    if missing:
+        raise HeadlessInvocationError(
+            f"exploration documentation agent omitted required files: {missing}",
+            cost_usd=cost, input_tokens=inp, output_tokens=out, latency_ms=latency_ms,
+        )
+    return ConversionResult(_EXPLORATION_DOC_FILES, cost, inp, out, latency_ms)
+
 
 async def write_mvp_docs(target_dir: Path, timeout_s: int = _TIMEOUT_S,
                          on_progress=None) -> ConversionResult:
@@ -667,7 +893,7 @@ async def write_mvp_docs(target_dir: Path, timeout_s: int = _TIMEOUT_S,
         "--add-dir", str(target_dir),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        env={**os.environ, "HOME": _HEADLESS_HOME, "ECC_GATEGUARD": "off"},
+        env=_claude_code_env(),
         cwd=str(target_dir),
     )
     _ACTIVE_HEADLESS_PROCS.add(proc)

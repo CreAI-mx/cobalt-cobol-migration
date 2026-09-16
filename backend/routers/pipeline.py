@@ -266,9 +266,14 @@ async def start_pipeline(run_id: str, conn: aiosqlite.Connection = Depends(get_d
     # PASSED/FAILED) — a retry of a FAILED run stayed 'FAILED' in the DB (and
     # therefore in run history) for the whole duration of the retry. Flip it
     # here so history reflects the retry immediately, not just its outcome.
+    # Real bug found 2026-09-16 (user: "3 horas 29 minutos lleva y no logra
+    # terminar"): started_at was never reset on a manual retry, so the UI's
+    # elapsed-time display kept counting from the ORIGINAL attempt hours
+    # earlier — the run was actually only a few minutes into this retry.
     await conn.execute(
-        "UPDATE migration_runs SET status = 'RUNNING', finished_at = NULL WHERE run_id = ?",
-        (run_id,),
+        "UPDATE migration_runs SET status = 'RUNNING', finished_at = NULL, "
+        "started_at = ? WHERE run_id = ?",
+        (datetime.now(timezone.utc).isoformat(), run_id),
     )
     await conn.commit()
     gate_status = await _latest_gate_status(conn, run_id)

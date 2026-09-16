@@ -15,12 +15,16 @@ from dotenv import load_dotenv
 # deterministic drafts forever. override=False: an operator's real shell
 # env var still wins over .env, this only fills gaps.
 load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=True)
-# Claude Code's own shell sets these to "" (empty, not unset) — the real
-# Anthropic SDK then builds a base URL with no scheme and every call fails
-# with a generic "Connection error." (found live, 2026-09-16, exploration's
-# agentic business-rule extraction). Strip process-wide, once, at startup.
-for _v in ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"):
-    os.environ.pop(_v, None)
+# Claude Code's own shell sets ANTHROPIC_BASE_URL="" (empty, not unset) —
+# the real Anthropic SDK (used directly by Strands/exploration's agentic
+# business-rule extraction) then builds a base URL with no scheme and every
+# call fails with a generic "Connection error." (found live, 2026-09-16).
+# Real regression found later the same day: popping ANTHROPIC_AUTH_TOKEN
+# alongside it broke the headless `claude -p` repair agents (orchestrator.py,
+# llm.py) — they need that token for their OWN auth flow, distinct from the
+# direct Anthropic SDK. Every repair attempt failed 401 until this was
+# narrowed back to ONLY the base URL.
+os.environ.pop("ANTHROPIC_BASE_URL", None)
 
 import llm
 from db import init_db, DB_PATH
