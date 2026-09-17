@@ -222,9 +222,18 @@ async def execute_exploration(run_id: str, conn, events: list) -> None:
         detail="clustering programs by CALL connectivity",
     ))
     pack = core.build_exploration_pack(run_id, source_dir, locked=False)
+    # Real bug found live 2026-09-16: this used to also set status='REVIEW'
+    # and finished_at=now() here — but Business logic, Graph, and
+    # Documentation (all real agentic steps) still run AFTER this point.
+    # A caller checking exploration_sessions saw "REVIEW, finished" and tried
+    # to lock/start migration while the task was still genuinely in flight
+    # (lock correctly 409'd since _exploration_is_live() was still True, but
+    # the DB row lied about being done). Only persist the draft pack here;
+    # status/finished_at are set once, for real, at the true end of this
+    # function after every step completes.
     await conn.execute(
-        "UPDATE exploration_sessions SET draft_pack_json = ?, status = ?, finished_at = ? WHERE run_id = ?",
-        (json.dumps(pack), "REVIEW", _now(), run_id),
+        "UPDATE exploration_sessions SET draft_pack_json = ? WHERE run_id = ?",
+        (json.dumps(pack), run_id),
     )
     await conn.commit()
     mod_count = len(pack.get("modules", []))

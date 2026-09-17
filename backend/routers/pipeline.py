@@ -255,6 +255,25 @@ async def start_pipeline(run_id: str, conn: aiosqlite.Connection = Depends(get_d
     source_dir = RUNS_DIR / run_id / "source"
     if not source_dir.exists():
         raise HTTPException(404, f"No intake found for run_id={run_id} — call POST /migration/intake first")
+    # Real gap found live 2026-09-16 (user: "no no no por que se va directo a
+    # la migracion si primero debe lanzar agentes reales, en la parte de
+    # exploracion"): Migration had NO gate requiring Exploration to run and
+    # be locked first — /start would accept a run mid-exploration or one that
+    # never explored at all. Exploration is now a hard prerequisite.
+    cur = await conn.execute(
+        "SELECT status FROM exploration_sessions WHERE run_id = ?", (run_id,),
+    )
+    row = await cur.fetchone()
+    if not row:
+        raise HTTPException(
+            409, "Exploration has not run for this run_id — call POST "
+            f"/migration/{run_id}/exploration/start, then .../exploration/lock, before starting migration",
+        )
+    if row[0] != "LOCKED":
+        raise HTTPException(
+            409, f"Exploration must be LOCKED before migration can start (current status: {row[0]}) — "
+            f"call POST /migration/{run_id}/exploration/lock first",
+        )
     if _run_is_live(run_id):
         gate_status = await _latest_gate_status(conn, run_id)
         return RunStatusResponse(
