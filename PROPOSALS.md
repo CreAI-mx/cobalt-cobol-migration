@@ -22,6 +22,21 @@ reenvía cuando corresponde. No implemento nada de esta lista sin que me lo pida
 
 ## Pendientes
 
+- **`POST /migration/{run_id}/parity-demo` ignora el parámetro `program`.**
+  Confirmado real por agente de verificación: `parity_demo.py::_detect_fixture()`
+  está hardcodeado a `"account_lookup"` siempre que ese archivo exista en la
+  fuente — no importa qué `program` se pida en el body. Esto es una
+  limitación PRE-EXISTENTE ya documentada en `parity_gate.py` (docstring:
+  "parity_demo.py is a manual Step-5 UI button hardcoded to one program
+  shape... [parity_gate.py] is the real gate"), no una regresión de hoy. El
+  gate real y automático (`parity_gate.py`, corre dentro de la migración)
+  SÍ soporta múltiples programas — verificado hoy con un run PASSED 3/3.
+  Si se quiere que el sandbox manual de la UI soporte elegir programa,
+  requiere generalizar `_detect_fixture`/`_run_cobol_oracle`/`_run_csharp_side`
+  para aceptar el parámetro `program` real y despachar el fixture correcto
+  por programa (reusar `cobol_io_profile.derive_fixture` en vez de la lógica
+  ad-hoc de account_lookup que tiene hoy).
+
 - **`/migration/runs` (listado) debe mostrar también fase/% de Exploración, no
   solo status de Migración.** Confusión real de usuario: la lista solo trae
   `migration_runs.status` (PASSED/FAILED/ABORTED/RUNNING) — un run cuya
