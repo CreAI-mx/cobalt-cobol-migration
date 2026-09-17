@@ -239,13 +239,23 @@ def write_as_is_documentation(output_dir: Path, source_dir: Path, pack: dict[str
     question_rows = [[q["id"], q["text"], q["status"]] for q in manifest["questions"]]
     integration_rows = [[f["path"], "SQL" if f["sql"] else "CICS" if f["cics"] else "File I/O" if f["file_operations"] else "None", "review required" if (f["sql"] or f["cics"] or f["file_operations"]) else "none detected"] for f in manifest["facts"]["files"]]
 
+    # User feedback (2026-09-16): "quiero mas protagonismo ese md as is a un
+    # lado de readme.md" — the AS-IS diagram was buried at 02-tecnico/10-*.md,
+    # 3 levels deep in the deliverables tree. Compute it once, publish it a
+    # second time at the package ROOT next to README.md for top billing, and
+    # link it prominently from README's own first section.
+    as_is_diagram_md = _as_is_diagrams_markdown(pack)
+    (output_dir / "DIAGRAMA-AS-IS.md").write_text(as_is_diagram_md, encoding="utf-8")
+
     (output_dir / "README.md").write_text(
         "# Dossier AS-IS de exploración\n\n"
         "Este paquete es el primer entregable del flujo: describe lo que el código COBOL evidencia hoy. "
         "No contiene diseño TO-BE ni artefactos de migración. Toda conclusión debe conservar su evidencia y ser validada por negocio antes de convertirse en requisito.\n\n"
+        "## Empieza aquí: [DIAGRAMA-AS-IS.md](./DIAGRAMA-AS-IS.md)\n\n"
+        "Flujo de control real del código, en Mermaid — la vista más rápida de qué hace el sistema hoy.\n\n"
         "## Contenido\n\n"
         "- `01-funcional`: reglas, procesos, glosario y preguntas abiertas.\n"
-        "- `02-tecnico`: inventario, datos, dependencias, integraciones, batch, diagramas y riesgos.\n"
+        "- `02-tecnico`: inventario, datos, dependencias, integraciones, batch, diagramas (misma vista que `DIAGRAMA-AS-IS.md`) y riesgos.\n"
         "- `00-trazabilidad`: registro auditable de evidencias.\n",
         encoding="utf-8",
     )
@@ -304,7 +314,7 @@ def write_as_is_documentation(output_dir: Path, source_dir: Path, pack: dict[str
     (technical_dir / "08-inventario-de-integraciones.md").write_text("# Inventario de integraciones\n\n" + _markdown_table(["Archivo", "Tipo detectado", "Estado"], integration_rows or [["—", "—", "—"]]) + "\n", encoding="utf-8")
     batch_rows = [[f["path"], "candidate" if f["batch"] else "none detected"] for f in manifest["facts"]["files"]]
     (technical_dir / "09-catalogo-de-procesos-batch.md").write_text("# Catálogo de procesos batch\n\n" + _markdown_table(["Archivo", "Señal batch"], batch_rows or [["—", "none detected"]]) + "\n", encoding="utf-8")
-    (technical_dir / "10-diagramas-as-is.md").write_text(_as_is_diagrams_markdown(pack), encoding="utf-8")
+    (technical_dir / "10-diagramas-as-is.md").write_text(as_is_diagram_md, encoding="utf-8")
     risk_rows = [[r["id"], r["text"], r.get("module_id") or "estate", "pending review"] for r in manifest["risks"]]
     (technical_dir / "11-evaluacion-de-complejidad-y-riesgo.md").write_text("# Complejidad y riesgo\n\n" + _markdown_table(["ID", "Hallazgo", "Ámbito", "Estado"], risk_rows or [["—", "No se detectaron riesgos por las reglas actuales", "estate", "pending review"]]) + "\n", encoding="utf-8")
 
