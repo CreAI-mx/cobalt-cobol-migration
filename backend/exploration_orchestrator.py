@@ -12,6 +12,8 @@ from ulid import ULID
 import exploration_core as core
 import exploration_documentation
 import llm
+import parity_gate
+from cobol_io_profile import derive_fixture, parse_io_profile
 from models import FileEvent, PhaseEvent
 from work_items import inventory_source
 
@@ -90,6 +92,28 @@ async def _agentic_relation_graph(source_dir: Path, pack: dict) -> tuple[dict | 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+async def _run_oracle_baseline(source_dir: Path, cobol_files: list) -> dict:
+    """Real ask (user, 2026-09-16): does Cobalt run the ORIGINAL COBOL to
+    know what to aspire to before writing C#? Answer was no — the GnuCOBOL
+    oracle only ran post-hoc, inside the migration's Parity gate. This runs
+    each COBOL program for real (reusing parity_gate's own compile+run
+    machinery, no reimplementation) during Exploration instead, so Planning/
+    Generating receive real captured behavior as ground truth, not just
+    static source text. Returns {path: {"ok": bool, "output": str}}."""
+    baseline: dict[str, dict] = {}
+    for f in cobol_files:
+        cbl_path = source_dir / f.path
+        try:
+            text = cbl_path.read_text(errors="replace")
+            profile = parse_io_profile(text)
+            fixture = derive_fixture(profile)
+            ok, output = await parity_gate._run_cobol_side(cbl_path, profile, fixture)
+            baseline[f.path] = {"ok": ok, "output": output[:2000]}
+        except Exception as exc:
+            baseline[f.path] = {"ok": False, "output": f"baseline execution failed: {exc}"[:300]}
+    return baseline
 
 
 async def _set_session(conn, run_id: str, status: str, **extra: str) -> None:
@@ -280,11 +304,76 @@ async def execute_exploration(run_id: str, conn, events: list) -> None:
         detail=f"total agent cost ${total_cost:.4f}" if any_ok else "no agent extraction ran — drafts kept",
     ))
 
+    # Real ask (user, 2026-09-16): "real agentico lo de la exploracion,
+    # generacion de documentacion... y el diagrama tambien agentico... y lo
+    # renderizas estos dos agentes en paralelo". The relation-graph agent and
+    # the documentation agent write to independent artifacts (a JSON graph
+    # file vs the docs/ tree) and neither reads the other's output, so they
+    # are genuinely safe to run concurrently instead of sequentially —
+    # wall-clock drops to max(graph, docs) instead of graph + docs.
     events.append(PhaseEvent(
         phase="Exploration · Graph", skill="cobol-relation-graph", status="RUNNING",
         detail="agent constructing one relation + sequence graph",
     ))
-    graph, graph_cost = await _agentic_relation_graph(source_dir, pack)
+    docs_dir = RUNS_DIR / run_id / "docs-cobol-accounting-system" / "docs"
+    corpus_dir = docs_dir.parent / "analysis-corpus"
+    corpus_stats = exploration_documentation.prepare_repository_corpus(REPO_ROOT, corpus_dir)
+    doc_result = exploration_documentation.write_as_is_documentation(docs_dir, corpus_dir, pack)
+    graph_path = docs_dir / "documentation_graph.json"
+    skeleton_graph = json.loads(graph_path.read_text(encoding="utf-8"))
+    pack["documentation"] = {
+        "scope": "Complete repository AS-IS exploration only; no TO-BE or migration artifacts",
+        "root": str(docs_dir),
+        "corpus": corpus_stats,
+        "documents": doc_result["documents"],
+        "agent_status": "deterministic skeleton",
+        "graph": skeleton_graph,
+        "cost_usd": 0.0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+    }
+    events.append(PhaseEvent(
+        phase="Exploration · Documentation", skill="as-is-documentation", status="RUNNING",
+        detail="building traceable Tier 1 and Tier 2 dossier",
+    ))
+    # Same bug class as the earlier "Modules" fix, reintroduced at this later
+    # point during this refactor — caught live 2026-09-16 re-testing the E2E
+    # gate: this must NOT set status='REVIEW' here. The Graph + Documentation
+    # agents (below, run concurrently) still have real work in flight; only
+    # persist the draft pack, never mark the session done until the true end.
+    await conn.execute(
+        "UPDATE exploration_sessions SET draft_pack_json = ? WHERE run_id = ?",
+        (json.dumps(pack), run_id),
+    )
+    await conn.commit()
+
+    events.append(PhaseEvent(
+        phase="Exploration · Baseline", skill="cobol-oracle-baseline", status="RUNNING",
+        detail="running original COBOL for real to capture expected behavior",
+    ))
+    reference_dir = REPO_ROOT / "docs-cobol-accounting-system" / "docs"
+    guide_path = REPO_ROOT / "GUIA-DOCUMENTACION-MIGRACION-COBOL-CSHARP.md"
+    graph_result, docs_result, baseline_result = await asyncio.gather(
+        _agentic_relation_graph(source_dir, pack),
+        llm.write_exploration_docs(corpus_dir, docs_dir, guide_path, reference_dir),
+        _run_oracle_baseline(source_dir, cobol),
+        return_exceptions=True,
+    )
+    if isinstance(baseline_result, Exception):
+        events.append(PhaseEvent(
+            phase="Exploration · Baseline", skill="cobol-oracle-baseline", status="SKIPPED",
+            detail=f"baseline execution failed: {baseline_result}"[:200],
+        ))
+    else:
+        pack["oracle_baseline"] = baseline_result
+        ok_count = sum(1 for v in baseline_result.values() if v.get("ok"))
+        events.append(PhaseEvent(
+            phase="Exploration · Baseline", skill="cobol-oracle-baseline",
+            status="OK" if ok_count == len(baseline_result) else "BLOCKED",
+            detail=f"{ok_count}/{len(baseline_result)} programs executed for real — captured as Planning input",
+        ))
+
+    graph, graph_cost = (None, {"ok": False, "reason": str(graph_result)}) if isinstance(graph_result, Exception) else graph_result
     total_cost += graph_cost.get("cost_usd") or 0.0
     if graph_cost.get("ok") and graph:
         pack["relation_graph"] = graph
@@ -321,84 +410,57 @@ async def execute_exploration(run_id: str, conn, events: list) -> None:
         (json.dumps(pack), run_id),
     )
     await conn.commit()
-
-    # Documentation is an AS-IS deliverable of exploration, not a migration
-    # phase. Build a deterministic, auditable skeleton first, then let the
-    # same Claude Code engine used by the migration flow enrich it from source.
-    docs_dir = RUNS_DIR / run_id / "docs-cobol-accounting-system" / "docs"
-    corpus_dir = docs_dir.parent / "analysis-corpus"
-    events.append(PhaseEvent(
-        phase="Exploration · Documentation", skill="as-is-documentation", status="RUNNING",
-        detail="building traceable Tier 1 and Tier 2 dossier",
-    ))
-    corpus_stats = exploration_documentation.prepare_repository_corpus(REPO_ROOT, corpus_dir)
-    doc_result = exploration_documentation.write_as_is_documentation(docs_dir, corpus_dir, pack)
-    graph_path = docs_dir / "documentation_graph.json"
-    graph = json.loads(graph_path.read_text(encoding="utf-8"))
-    pack["documentation"] = {
-        "scope": "Complete repository AS-IS exploration only; no TO-BE or migration artifacts",
-        "root": str(docs_dir),
-        "corpus": corpus_stats,
-        "documents": doc_result["documents"],
-        "agent_status": "deterministic skeleton",
-        "graph": graph,
-        "cost_usd": 0.0,
-        "input_tokens": 0,
-        "output_tokens": 0,
-    }
-    # Publish the auditable skeleton before the long Claude Code pass so the
-    # UI exposes the corpus, graph and ZIP even while enrichment is running.
-    await conn.execute(
-        "UPDATE exploration_sessions SET draft_pack_json = ?, status = ? WHERE run_id = ?",
-        (json.dumps(pack), "REVIEW", run_id),
-    )
-    await conn.commit()
-    try:
-        reference_dir = REPO_ROOT / "docs-cobol-accounting-system" / "docs"
-        guide_path = REPO_ROOT / "GUIA-DOCUMENTACION-MIGRACION-COBOL-CSHARP.md"
-        result = await llm.write_exploration_docs(corpus_dir, docs_dir, guide_path, reference_dir)
+    if isinstance(docs_result, llm.HeadlessInvocationError):
+        await conn.execute(
+            "INSERT INTO cost_logs (log_id, run_id, phase, agent_id, input_tokens, "
+            "output_tokens, cost_usd, latency_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (str(ULID()), run_id, "Exploration · Documentation", "claude-code-docs",
+             docs_result.input_tokens, docs_result.output_tokens, docs_result.cost_usd, docs_result.latency_ms, _now()),
+        )
+        pack["documentation"]["agent_status"] = f"skeleton only: {str(docs_result)[:200]}"
+        pack["documentation"].update({
+            "cost_usd": docs_result.cost_usd, "input_tokens": docs_result.input_tokens,
+            "output_tokens": docs_result.output_tokens,
+        })
+        events.append(PhaseEvent(
+            phase="Exploration · Documentation", skill="claude-code-as-is-docs", status="SKIPPED",
+            detail=f"Claude Code failed after ${docs_result.cost_usd:.4f}; auditable skeleton retained",
+        ))
+    elif isinstance(docs_result, Exception):
+        pack["documentation"]["agent_status"] = f"skeleton only: {str(docs_result)[:200]}"
+        events.append(PhaseEvent(
+            phase="Exploration · Documentation", skill="claude-code-as-is-docs", status="SKIPPED",
+            detail=f"Claude Code unavailable; auditable skeleton retained: {str(docs_result)[:160]}",
+        ))
+    else:
         closure_errors = exploration_documentation.validate_as_is_documentation(
-            docs_dir, corpus_dir, result.files_written,
+            docs_dir, corpus_dir, docs_result.files_written,
         )
         if closure_errors:
-            raise RuntimeError("documentation closure failed: " + "; ".join(closure_errors[:4]))
-        pack["documentation"].update({
-            "documents": result.files_written,
-            "agent_status": "Claude Code complete",
-            "graph": json.loads(graph_path.read_text(encoding="utf-8")),
-            "cost_usd": result.cost_usd,
-            "input_tokens": result.input_tokens,
-            "output_tokens": result.output_tokens,
-        })
+            pack["documentation"]["agent_status"] = "skeleton only: documentation closure failed: " + "; ".join(closure_errors[:4])
+            events.append(PhaseEvent(
+                phase="Exploration · Documentation", skill="claude-code-as-is-docs", status="SKIPPED",
+                detail="documentation closure failed: " + "; ".join(closure_errors[:4]),
+            ))
+        else:
+            pack["documentation"].update({
+                "documents": docs_result.files_written,
+                "agent_status": "Claude Code complete",
+                "graph": json.loads(graph_path.read_text(encoding="utf-8")),
+                "cost_usd": docs_result.cost_usd,
+                "input_tokens": docs_result.input_tokens,
+                "output_tokens": docs_result.output_tokens,
+            })
+            events.append(PhaseEvent(
+                phase="Exploration · Documentation", skill="claude-code-as-is-docs", status="OK",
+                detail=f"{len(docs_result.files_written)} AS-IS documents written (${docs_result.cost_usd:.4f})",
+            ))
         await conn.execute(
             "INSERT INTO cost_logs (log_id, run_id, phase, agent_id, input_tokens, "
             "output_tokens, cost_usd, latency_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (str(ULID()), run_id, "Exploration · Documentation", "claude-code-docs",
-             result.input_tokens, result.output_tokens, result.cost_usd, result.latency_ms, _now()),
+             docs_result.input_tokens, docs_result.output_tokens, docs_result.cost_usd, docs_result.latency_ms, _now()),
         )
-        events.append(PhaseEvent(
-            phase="Exploration · Documentation", skill="claude-code-as-is-docs", status="OK",
-            detail=f"{len(result.files_written)} AS-IS documents written (${result.cost_usd:.4f})",
-        ))
-    except llm.HeadlessInvocationError as exc:
-        await conn.execute(
-            "INSERT INTO cost_logs (log_id, run_id, phase, agent_id, input_tokens, "
-            "output_tokens, cost_usd, latency_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (str(ULID()), run_id, "Exploration · Documentation", "claude-code-docs",
-             exc.input_tokens, exc.output_tokens, exc.cost_usd, exc.latency_ms, _now()),
-        )
-        pack["documentation"]["agent_status"] = f"skeleton only: {str(exc)[:200]}"
-        pack["documentation"].update({"cost_usd": exc.cost_usd, "input_tokens": exc.input_tokens, "output_tokens": exc.output_tokens})
-        events.append(PhaseEvent(
-            phase="Exploration · Documentation", skill="claude-code-as-is-docs", status="SKIPPED",
-            detail=f"Claude Code failed after ${exc.cost_usd:.4f}; auditable skeleton retained",
-        ))
-    except Exception as exc:
-        pack["documentation"]["agent_status"] = f"skeleton only: {str(exc)[:200]}"
-        events.append(PhaseEvent(
-            phase="Exploration · Documentation", skill="claude-code-as-is-docs", status="SKIPPED",
-            detail=f"Claude Code unavailable; auditable skeleton retained: {str(exc)[:160]}",
-        ))
     await conn.execute(
         "UPDATE exploration_sessions SET draft_pack_json = ?, status = ?, finished_at = ? WHERE run_id = ?",
         (json.dumps(pack), "REVIEW", _now(), run_id),

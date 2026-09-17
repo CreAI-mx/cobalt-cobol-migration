@@ -109,6 +109,16 @@ def _exploration_prompt_section(pack: dict | None) -> str:
         notes = mod.get("human_notes")
         if notes:
             lines.append(f"    human_notes: {notes}")
+    baseline = pack.get("oracle_baseline") or {}
+    if baseline:
+        lines.append(
+            "\nReal GnuCOBOL execution captured during Exploration (ground "
+            "truth — the generated C# must reproduce this exact behavior, "
+            "not a guess from reading the source alone):"
+        )
+        for path, result in baseline.items():
+            status = "ok" if result.get("ok") else "FAILED TO RUN"
+            lines.append(f"  - {path} ({status}):\n    {result.get('output', '')[:500]}")
     return "\n".join(lines) + "\n"
 
 
