@@ -148,11 +148,26 @@ async def _execute_exploration(run_id: str) -> None:
             phase="Exploration · Modules", skill="exploration", status="BLOCKED",
             detail=tb.strip().splitlines()[-1] if tb.strip() else "exploration failed",
         ))
-        await conn.execute(
-            "UPDATE exploration_sessions SET status = ?, finished_at = ? WHERE run_id = ?",
-            ("FAILED", _now(), run_id),
-        )
-        await conn.commit()
+        # Real bug found live 2026-09-16 (two concurrent Exploration runs
+        # hit "database is locked" on a genuine write collision): this
+        # cleanup write used the SAME conn that just failed, with no
+        # try/except of its own — if the lock was still held, THIS write
+        # also raised, unhandled, leaving status='RUNNING' forever (a
+        # permanently stuck run with no live task — "Task exception was
+        # never retrieved" in the log). A fresh connection + its own
+        # try/except means a crash always leaves a terminal, honest status.
+        try:
+            cleanup_conn = await open_db()
+            try:
+                await cleanup_conn.execute(
+                    "UPDATE exploration_sessions SET status = ?, finished_at = ? WHERE run_id = ?",
+                    ("FAILED", _now(), run_id),
+                )
+                await cleanup_conn.commit()
+            finally:
+                await cleanup_conn.close()
+        except Exception as cleanup_exc:
+            print(f"[_execute_exploration] run_id={run_id} FAILED-status write also failed: {cleanup_exc}", flush=True)
     finally:
         snapshot_task.cancel()
         try:

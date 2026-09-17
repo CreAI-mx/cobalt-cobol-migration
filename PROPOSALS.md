@@ -22,6 +22,40 @@ reenvía cuando corresponde. No implemento nada de esta lista sin que me lo pida
 
 ## Pendientes
 
+- **`/migration/runs` (listado) debe mostrar también fase/% de Exploración, no
+  solo status de Migración.** Confusión real de usuario: la lista solo trae
+  `migration_runs.status` (PASSED/FAILED/ABORTED/RUNNING) — un run cuya
+  Migración nunca arrancó pero cuya Exploración sigue viva en background se ve
+  igual que uno completamente muerto ("ABORTED"), sin ninguna señal de que
+  Exploración sigue trabajando. Fix: el listado debe hacer join con
+  `exploration_sessions` (o el endpoint agregar el campo) y mostrar algo como
+  "Exploration: RUNNING (fase X, Y%)" cuando `exploration_sessions.status`
+  no sea terminal, incluso si `migration_runs.status = ABORTED`. Dato ya
+  disponible vía `GET /migration/{run_id}/exploration/status` (`live`,
+  `status`) — solo falta agregarlo a la vista de listado.
+
+- **Bug real de UX encontrado por E2E con navegador (Playwright, clicks reales):**
+  el botón "Lock" en Step 2 puede fallar con 409 (exploración aún no realmente
+  terminada) SIN mostrar error visible al usuario — la UI deja avanzar
+  Architecture → Manifest → aprobar → Step 5 → "Migrar" de todas formas. El
+  usuario solo se entera del fallo real hasta el final (4 pantallas después),
+  cuando el backend rechaza `/start` con 409 (gate real, ya implementado y
+  funcionando en backend). Fix: si el click a "Lock" devuelve error, mostrarlo
+  inmediatamente y bloquear el avance a Architecture/Manifest hasta que
+  Exploration esté realmente `LOCKED`.
+- **Botón "Migrar" en español** rompe consistencia con el resto de la UI (en
+  inglés) — debería decir "Migrate" o "Start Migration".
+- Varios `404 Not Found` en consola durante el recorrido completo (no bloquean
+  el flujo pero ensucian la consola) — recursos no encontrados, no identificados
+  a detalle por el agente E2E.
+
+- **"Pseudocode flow" volvió a horizontal — debe ser vertical.** Usuario:
+  "debe ser siempre en vertical, me hiciste algo muy feo todo en horizontal,
+  ya estaba bien esto". Regla ya guardada como standing reminder global.
+  Revisar el componente que renderiza el flowchart de pseudocódigo (grafo de
+  nodos start/end/process/decision/loop) y forzar orientación vertical
+  (top-to-bottom) siempre, sin importar cantidad de nodos.
+
 - **Reducir el pipeline a 5 fases visibles para el humano (colapsar, no eliminar).**
   Usuario, verbatim: "esperaría algo más reducido, algo intuitivo humanamente" — 15
   eventos de fase para un repo de 3 archivos es ceremonia desproporcionada. Propuesta:

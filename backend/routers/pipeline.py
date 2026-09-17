@@ -157,6 +157,17 @@ def _run_is_live(run_id: str) -> bool:
     return task is not None and not task.done()
 
 
+def _stream_is_live(run_id: str) -> bool:
+    """True while conversion or exploration is writing the shared SSE log.
+    `_run_is_live` stays conversion-only so POST /start does not no-op during
+    exploration. GET /detail.live must include exploration or the UI poller
+    closes EventSource and freezes the run-meter (timer still ticks)."""
+    if _run_is_live(run_id):
+        return True
+    from routers.exploration import _exploration_is_live
+    return _exploration_is_live(run_id)
+
+
 async def _snapshot_events(conn: aiosqlite.Connection, run_id: str) -> None:
     """Overwrite run_events with the current in-memory log. Called periodically
     while live and once more on exit — good enough resolution to answer 'which
@@ -232,14 +243,27 @@ async def _execute_run(run_id: str) -> None:
             if not any(isinstance(e, PhaseEvent) and e.phase == _DONE_PHASE for e in events):
                 events.append(PhaseEvent(phase=_DONE_PHASE, skill="pipeline", status="OK",
                                          detail="stream complete"))
+            # Real critical bug found live 2026-09-16 (confirmed by audit,
+            # same pattern already fixed in routers/exploration.py
+            # ::_execute_exploration): this cleanup write reused the SAME
+            # conn that just failed (e.g. "database is locked" under
+            # concurrent runs), with no connection of its own — a second
+            # failure here silently `pass`ed, leaving migration_runs stuck
+            # at status='RUNNING' forever with no live task and no log line.
+            # A fresh connection + a logged (not swallowed) failure means a
+            # crash always leaves an honest terminal status.
             try:
-                await conn.execute(
-                    "UPDATE migration_runs SET status = ?, finished_at = ? WHERE run_id = ?",
-                    ("FAILED", datetime.now(timezone.utc).isoformat(), run_id),
-                )
-                await conn.commit()
-            except Exception:
-                pass
+                cleanup_conn = await open_db()
+                try:
+                    await cleanup_conn.execute(
+                        "UPDATE migration_runs SET status = ?, finished_at = ? WHERE run_id = ?",
+                        ("FAILED", datetime.now(timezone.utc).isoformat(), run_id),
+                    )
+                    await cleanup_conn.commit()
+                finally:
+                    await cleanup_conn.close()
+            except Exception as cleanup_exc:
+                print(f"[_execute_run] run_id={run_id} FAILED-status write also failed: {cleanup_exc}", flush=True)
         finally:
             snapshot_task.cancel()
             try:
@@ -351,7 +375,7 @@ async def get_run_detail(run_id: str, conn: aiosqlite.Connection = Depends(get_d
     return {
         "run_id": run_id, "status": status, "source_repo": source_repo,
         "started_at": started_at, "finished_at": finished_at,
-        "live": _run_is_live(run_id), "events": events,
+        "live": _stream_is_live(run_id), "events": events,
         "plan": plan.to_dict() if plan else None,
     }
 

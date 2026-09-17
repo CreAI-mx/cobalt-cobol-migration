@@ -61,3 +61,23 @@ def test_transaction_posting_fixtures_share_the_lookup_key():
     trans_key = fixture.files["transactions.dat"][:10]
     acct_key = fixture.files["accounts.dat"][:10]
     assert trans_key == acct_key
+
+
+def test_transaction_posting_detects_tr_type_comparison_literals():
+    # Real defect (2026-09-16, run 01M2PFCANG748NR8D5114YE584): TR-TYPE
+    # PIC X(10) is compared against "DEPOSIT"/"WITHDRAWAL" literals in the
+    # PROCEDURE DIVISION to pick a branch. A generic filler value equal to
+    # neither literal leaves the program's AS-IS behavior undefined for
+    # that input.
+    profile = parse_io_profile((_SRC / "transaction_posting.cbl").read_text())
+    assert profile.field_literals.get("TR-TYPE") == "DEPOSIT"
+
+
+def test_transaction_posting_fixture_uses_real_tr_type_literal_not_generic_fill():
+    profile = parse_io_profile((_SRC / "transaction_posting.cbl").read_text())
+    fixture = derive_fixture(profile)
+    # transactions.dat record: TR-ACCT-NUM 9(10) + TR-AMOUNT S9(7)V99 (9
+    # bytes) + TR-TYPE X(10) -> TR-TYPE starts at offset 19.
+    tr_type_value = fixture.files["transactions.dat"][19:29]
+    assert tr_type_value == "DEPOSIT   "
+    assert "COBALTFIXT" not in tr_type_value

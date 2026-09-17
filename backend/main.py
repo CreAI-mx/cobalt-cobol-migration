@@ -1,5 +1,6 @@
 """FastAPI app — single source of truth for both human UI and agentic API.
 Serves the intake page at / and OpenAPI (the agentic entry point) at /docs for free."""
+import asyncio
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,6 +28,7 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=True)
 os.environ.pop("ANTHROPIC_BASE_URL", None)
 
 import llm
+import watchdog
 from db import init_db, DB_PATH
 from routers import intake, pipeline, exploration
 
@@ -58,7 +60,18 @@ def _write_startup_lockfile() -> None:
 async def lifespan(app: FastAPI):
     _write_startup_lockfile()
     await init_db()
+    # Stuck-run watchdog (backend/watchdog.py): catches a run that goes
+    # RUNNING-with-no-live-task WITHIN this same process's lifetime (silent
+    # task crash, a DB-lock write failing inside the crash handler itself) —
+    # the sibling case to _abort_orphaned_runs (db.py), which only catches a
+    # RUNNING row left over from a PREVIOUS process at startup.
+    watchdog_task = asyncio.create_task(watchdog.watchdog_loop())
     yield
+    watchdog_task.cancel()
+    try:
+        await watchdog_task
+    except asyncio.CancelledError:
+        pass
     # COBALT-5 (audit 2026-09-16): a graceful `uvicorn` shutdown (SIGTERM) now
     # kills any still-running `claude -p` headless children instead of
     # orphaning them to init. Does NOT help on `kill -9`/crash (no shutdown

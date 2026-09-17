@@ -25,6 +25,7 @@ async def init_db() -> None:
         await _migrate_run_events(conn)
         await _migrate_work_items(conn)
         await _migrate_exploration_sessions(conn)
+        await _migrate_watchdog_events(conn)
 
 
 async def _migrate_file_kind(conn: aiosqlite.Connection) -> None:
@@ -203,13 +204,37 @@ async def _migrate_exploration_sessions(conn: aiosqlite.Connection) -> None:
     await conn.commit()
 
 
+async def _migrate_watchdog_events(conn: aiosqlite.Connection) -> None:
+    """Audit trail for the background stuck-run watchdog (backend/watchdog.py):
+    every orphan it detects and every action it takes (mark FAILED, auto-retry)
+    gets a row here — never a silent write. Also doubles as the auto-retry
+    counter (COUNT of action='auto_retry' rows per run_id) so the cap survives
+    a process restart."""
+    cursor = await conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='watchdog_events'"
+    )
+    if await cursor.fetchone():
+        return
+    await conn.execute(
+        """CREATE TABLE watchdog_events (
+            event_id    TEXT PRIMARY KEY,
+            run_id      TEXT NOT NULL,
+            kind        TEXT NOT NULL,          -- 'pipeline' | 'exploration'
+            action      TEXT NOT NULL,          -- 'marked_failed' | 'auto_retry' | 'retry_skipped_cap'
+            detail      TEXT,
+            created_at  TEXT NOT NULL
+        )"""
+    )
+    await conn.commit()
+
+
 async def open_db() -> aiosqlite.Connection:
     """Owned connection for background pipeline tasks — get_db() closes when
     the HTTP request ends, which would kill a fire-and-forget /start job."""
     conn = await aiosqlite.connect(DB_PATH)
     conn.row_factory = aiosqlite.Row
     await conn.execute("PRAGMA journal_mode=WAL")
-    await conn.execute("PRAGMA busy_timeout=5000")
+    await conn.execute("PRAGMA busy_timeout=30000")
     return conn
 
 
@@ -231,7 +256,7 @@ async def get_db():
     conn = await aiosqlite.connect(DB_PATH)
     conn.row_factory = aiosqlite.Row
     await conn.execute("PRAGMA journal_mode=WAL")
-    await conn.execute("PRAGMA busy_timeout=5000")
+    await conn.execute("PRAGMA busy_timeout=30000")
     try:
         yield conn
     finally:

@@ -35,6 +35,18 @@ _RECORD_FIELD_RE = re.compile(
 )
 _ACCEPT_RE = re.compile(r"\bACCEPT\s+([\w-]+)", re.IGNORECASE)
 _MUTATE_RE = re.compile(r"\b(?:REWRITE|WRITE)\s+([\w-]+)", re.IGNORECASE)
+
+
+def _literal_comparisons_for_field(procedure_text: str, field_name: str) -> list[str]:
+    """Literals a field is compared against via IF/WHEN in the PROCEDURE
+    DIVISION — e.g. `IF TR-TYPE = "DEPOSIT"`. These mark the branches the
+    program's control flow actually depends on, so a fixture built from a
+    generic filler value (never equal to any of them) exercises no real
+    branch and leaves AS-IS behavior on that input undefined."""
+    pattern = re.compile(
+        rf'\b(?:IF|WHEN)\s+{re.escape(field_name)}\s*=\s*"([^"]*)"', re.IGNORECASE,
+    )
+    return [lit for lit in pattern.findall(procedure_text) if len(lit) <= _pic_x_width(field_name, procedure_text) or True]
 _SECTION_SPLIT_RE = re.compile(
     r"^\s*(PROCEDURE\s+DIVISION|WORKING-STORAGE\s+SECTION|FILE\s+SECTION)\b",
     re.IGNORECASE | re.MULTILINE,
@@ -54,6 +66,7 @@ class FileSpec:
     assign_path: str
     record_name: str
     record_pics: list[str]
+    record_field_names: list[str]
     mutated: bool
 
 
@@ -63,6 +76,7 @@ class ProgramIoProfile:
     mode: Literal["interactive", "interactive_with_lookup_file", "file_batch", "unsupported"]
     accepts: list[AcceptField] = field(default_factory=list)
     files: list[FileSpec] = field(default_factory=list)
+    field_literals: dict[str, str] = field(default_factory=dict)
 
 
 def _split_sections(cbl_text: str) -> dict[str, str]:
@@ -95,11 +109,13 @@ def _parse_files(cbl_text: str, file_section: str, procedure_text: str) -> list[
         record_match = re.search(r"^\s*01\s+([\w-]+)\.", block, re.IGNORECASE | re.MULTILINE)
         record_name = record_match.group(1).upper() if record_match else select_name
         record_pics = [pic for _name, pic in fields]
+        record_field_names = [name.upper() for name, _pic in fields]
         files.append(FileSpec(
             select_name=select_name.upper(),
             assign_path=assign_path,
             record_name=record_name,
             record_pics=record_pics,
+            record_field_names=record_field_names,
             mutated=record_name in mutated_records,
         ))
     return files
@@ -149,7 +165,19 @@ def parse_io_profile(cbl_text: str) -> ProgramIoProfile:
     else:
         mode = "unsupported"
 
-    return ProgramIoProfile(program_id=program_id, mode=mode, accepts=accepts, files=files)
+    field_names = {a.var_name.upper() for a in accepts}
+    for f in files:
+        field_names.update(f.record_field_names)
+    field_literals: dict[str, str] = {}
+    for name in field_names:
+        literals = _literal_comparisons_for_field(procedure_text, name)
+        if literals:
+            field_literals[name] = literals[0]
+
+    return ProgramIoProfile(
+        program_id=program_id, mode=mode, accepts=accepts, files=files,
+        field_literals=field_literals,
+    )
 
 
 def _numeric_fixture_value(pic: str, sign_separate: bool) -> str:
@@ -162,10 +190,15 @@ def _alpha_fixture_value(width: int) -> str:
     return (tile * (width // len(tile) + 1))[:width]
 
 
-def _field_fixture_value(pic: str) -> str:
+def _field_fixture_value(pic: str, literal: str | None = None) -> str:
     if pic.upper().lstrip("S").startswith("X"):
         m = re.search(r"\((\d+)\)", pic)
         width = int(m.group(1)) if m else pic.upper().count("X")
+        if literal is not None:
+            # A real comparison literal from the program's own control flow
+            # (e.g. IF TR-TYPE = "DEPOSIT") — exercises that branch instead
+            # of an unmatched-anything generic fill.
+            return literal.ljust(width)[:width]
         return _alpha_fixture_value(width)
     return _numeric_fixture_value(pic, sign_separate=False)
 
@@ -177,24 +210,32 @@ class Fixture:
 
 
 def derive_fixture(profile: ProgramIoProfile) -> Fixture:
-    stdin_lines = [_field_fixture_value(a.pic) for a in profile.accepts]
+    literals = profile.field_literals
+    stdin_lines = [
+        _field_fixture_value(a.pic, literals.get(a.var_name.upper())) for a in profile.accepts
+    ]
     stdin = ("\n".join(stdin_lines) + "\n") if stdin_lines else None
 
     files: dict[str, str] = {}
     mutated = next((f for f in profile.files if f.mutated), None)
     key_value = None
     if mutated and mutated.record_pics:
-        key_value = _field_fixture_value(mutated.record_pics[0])
+        key_value = _field_fixture_value(
+            mutated.record_pics[0], literals.get(mutated.record_field_names[0]),
+        )
 
     for f in profile.files:
-        record_values = list(f.record_pics)
+        record_values = list(zip(f.record_pics, f.record_field_names))
         if key_value is not None and record_values:
             # Non-mutated lookup files share the mutated file's key so the
             # program's normal (found/matched) path runs, not its error path
             # — v1 exercises the happy path only.
-            values = [key_value] + [_field_fixture_value(p) for p in record_values[1:]]
+            rest = [
+                _field_fixture_value(pic, literals.get(name)) for pic, name in record_values[1:]
+            ]
+            values = [key_value] + rest
         else:
-            values = [_field_fixture_value(p) for p in record_values]
+            values = [_field_fixture_value(pic, literals.get(name)) for pic, name in record_values]
         files[f.assign_path] = "".join(values) + "\n"
 
     return Fixture(stdin=stdin, files=files)
